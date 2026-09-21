@@ -1,0 +1,31 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\PanoptoScheduler.Core\PanoptoScheduler.Core.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <!--
+    Stamped rather than left to default. Without these the title bar reads
+    "1.0.0" forever and a support call cannot tell which build someone is on,
+    which is the difference between knowing where to look and guessing.
+    Bump Version for a release; the version is what the title bar and the log
+    both show.
+  -->
+  <PropertyGroup>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <Product>Panopto Scheduler</Product>
+    <Company>Rotman School of Management</Company>
+    <Description>Schedules and edits Panopto recordings for the AV team.</Description>
+  </PropertyGroup>
+
+</Project>

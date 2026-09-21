@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Encrypts the cached refresh token with the Windows Data Protection API.
+      Not part of the shared framework on a non-Windows TFM, hence the explicit
+      reference. Used only on Windows; see DpapiTokenStore.
+    -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      SoapXml is internal: it is the XML plumbing behind the typed clients and
+      has no business being part of the public surface. The tests assert on the
+      exact XML Panopto receives, which is where the real bugs live, so they
+      need to reach it.
+    -->
+    <InternalsVisibleTo Include="PanoptoScheduler.Core.Tests" />
+  </ItemGroup>
+
+</Project>

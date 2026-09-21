@@ -1,0 +1,242 @@
+<Application x:Class="PanoptoScheduler.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:PanoptoScheduler.App"
+             xmlns:conv="clr-namespace:PanoptoScheduler.App.Converters">
+    <!-- One stylesheet for the whole app.
+
+         These used to live in each window, which meant the same button template
+         was written out three times and the same six greys were typed in four
+         files. Anything that had to change had to change in all of them, and the
+         two reds had already drifted apart: the delete button was #D9534F and
+         the credential dialog's error text was #C0392B, for no reason anyone
+         wrote down.
+
+         Only named styles, deliberately. An implicit style here would apply to
+         every control in the app including the ones inside DataGrid cells, which
+         is a much wider change than consolidating four files.
+
+         The contrast ratio beside each colour is the WCAG 2.x figure for the
+         pair it is actually used in, computed from these hex values rather than
+         eyeballed. Four and a half to one is the target for body text and for a
+         button's label. Two of these were failing before: the muted grey at
+         2.94:1 and white on the old danger red at 3.96:1, and an accent that had
+         been chosen for how it looked as a fill turned out to be 4.24:1 as text
+         on its own tint.
+
+         Worth knowing, since the numbers look more precise than the judgement
+         behind them: a ratio is a property of two colours, not of a design. It
+         says nothing about whether a colour reads as "the one that changes
+         things" rather than "the one that only changes what is on screen", and
+         nothing about a person's own monitor. It is a floor, not an answer. -->
+    <Application.Resources>
+
+        <!-- ==== Colour ====
+
+             Named by role rather than by hue, so a colour is chosen once and the
+             contrast fix below is one edit instead of nine. -->
+        <SolidColorBrush x:Key="WindowBg" Color="#F5F6F8" />
+        <SolidColorBrush x:Key="Surface" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="Ink" Color="#1F2430" />
+        <SolidColorBrush x:Key="PanelBorder" Color="#E3E6EA" />
+        <SolidColorBrush x:Key="InputBorder" Color="#D5D9DF" />
+        <SolidColorBrush x:Key="HourRule" Color="#EDEFF2" />
+
+        <!-- Contrast figures below are measured, not estimated — see the note at
+             the foot of this block.
+
+             Was #8A919B, which measures 2.94:1 on the window background at 11px
+             — under the 4.5:1 a small label needs, and these are the labels that
+             carry the hour and the file path. #5F6772 measures 5.29:1. -->
+        <SolidColorBrush x:Key="Muted" Color="#5F6772" />
+
+        <!-- 5.53:1 on the window background, 5.98:1 on a white surface. -->
+        <SolidColorBrush x:Key="Secondary" Color="#5B6472" />
+
+        <!-- #2F6FED measured 4.24:1 as text on AccentSoft — under 4.5:1 — and
+             only 4.55:1 for the white label on the write button, a pass with
+             nothing to spare. Both are the same colour, so one darkening fixes
+             both: #1F5FD8 measures 5.31:1 on AccentSoft and 5.70:1 on white. -->
+        <SolidColorBrush x:Key="Accent" Color="#1F5FD8" />
+        <SolidColorBrush x:Key="AccentSoft" Color="#F3F7FF" />
+        <SolidColorBrush x:Key="AccentSoftBorder" Color="#C7D8F7" />
+
+        <!-- One red. Was two: #D9534F here and #C0392B in the credential dialog.
+             White on #D9534F measures 3.96:1, short of the 4.5:1 the button label
+             needs; white on #C0392B measures 5.44:1. -->
+        <SolidColorBrush x:Key="Danger" Color="#C0392B" />
+        <SolidColorBrush x:Key="DangerSoft" Color="#FDECEA" />
+        <SolidColorBrush x:Key="DangerSoftBorder" Color="#E7B4AD" />
+        <SolidColorBrush x:Key="DangerText" Color="#8A2A21" />
+
+        <SolidColorBrush x:Key="WarningBg" Color="#FFF8E6" />
+        <SolidColorBrush x:Key="WarningBorder" Color="#F0D9A0" />
+        <SolidColorBrush x:Key="WarningText" Color="#7A5B12" />
+        <SolidColorBrush x:Key="Caution" Color="#B45309" />
+
+        <!-- What a disabled button turns into. Fading the blue to 45% left white
+             text on it at roughly 1.4:1 — unreadable, and still the shape and
+             colour of a button that wants pressing.
+
+             So the fill goes pale and the *text* goes dark, rather than both
+             fading. #5F6772 on #EDEFF2 measures 4.97:1, so a disabled button
+             still says what it does; the outline stays, so it is still visibly a
+             control. The colour is what leaves, and that is the part that means
+             "not now". -->
+        <SolidColorBrush x:Key="DisabledFill" Color="#EDEFF2" />
+
+        <BooleanToVisibilityConverter x:Key="BoolToVisible" />
+
+        <!-- The inverse, which WPF does not ship. Used where two elements say
+             opposite things about one fact — "no link was reported" against the
+             link itself — so the pair is driven by one bool instead of two
+             properties that have to be kept in agreement by hand. -->
+        <conv:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisible" />
+
+        <!-- ==== Text ==== -->
+        <Style x:Key="HeaderText" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+
+        <!-- An 11px explanatory line: hour labels, day sub-headers, file paths,
+             dialog details. -->
+        <Style x:Key="MutedText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource Muted}" />
+        </Style>
+
+        <Style x:Key="SecondaryText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource Secondary}" />
+        </Style>
+
+        <!-- ==== Buttons ==== -->
+
+        <!-- The base for every button in the app. Carries the hover, pressed,
+             cursor and disabled states, which none of the four per-window copies
+             had: nothing on screen said a button had been pressed until the click
+             landed, and a disabled one looked exactly like a live one. -->
+        <Style x:Key="ToolbarButton" TargetType="Button">
+            <Setter Property="Padding" Value="14,7" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Background" Value="{StaticResource Surface}" />
+            <Setter Property="BorderBrush" Value="{StaticResource InputBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{StaticResource Ink}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5" Padding="{TemplateBinding Padding}">
+                            <!-- RecognizesAccessKey is off by default on a plain
+                                 ContentPresenter, and the stock Button template
+                                 sets it — so writing our own template here
+                                 silently dropped it, and every accelerator in
+                                 the app started rendering its underscore as a
+                                 literal character: "Sign _Out", "_This week".
+
+                                 WPF only strips the underscore and underlines
+                                 the letter while Alt is held, which is why this
+                                 was invisible until an operator looked at the
+                                 toolbar. Without this the accelerator is a
+                                 label that lies about being one. -->
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Opacity" Value="0.86" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Opacity" Value="0.7" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <!-- The disabled state lives here rather than in the coloured styles
+                 below, for two reasons. Every button needs it — the sign-in
+                 button is disabled from code while the browser is opening, and
+                 it had no disabled look at all. And a style trigger outranks
+                 *every* setter including the ones in a BasedOn-derived style,
+                 which is exactly the behaviour wanted: WriteButton's blue is a
+                 setter, so this trigger overrides it while disabled and steps
+                 aside the moment the button comes back. It also means the
+                 coloured styles do not each have to restate this. -->
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="{StaticResource DisabledFill}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource InputBorder}" />
+                    <Setter Property="Foreground" Value="{StaticResource Muted}" />
+                    <Setter Property="Cursor" Value="Arrow" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- A button in a row of controls rather than in the toolbar. -->
+        <Style x:Key="ActionButton" TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+        </Style>
+
+        <!-- The button that changes the tenant, so it is the one that has to look
+             different from the ones that only change what is on screen. -->
+        <Style x:Key="WriteButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
+            <Setter Property="Background" Value="{StaticResource Accent}" />
+            <Setter Property="Foreground" Value="{StaticResource Surface}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Accent}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource WriteButton}">
+            <Setter Property="Background" Value="{StaticResource Danger}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Danger}" />
+        </Style>
+
+        <!-- Buttons in the two dialogs, which have room for a wider box. -->
+        <Style x:Key="DialogButton" TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+            <Setter Property="Padding" Value="16,7" />
+            <Setter Property="MinWidth" Value="92" />
+        </Style>
+
+        <!-- ==== Inputs ==== -->
+        <Style x:Key="FieldTextBox" TargetType="TextBox">
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="BorderBrush" Value="{StaticResource InputBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <Style x:Key="FieldPasswordBox" TargetType="PasswordBox">
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="BorderBrush" Value="{StaticResource InputBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <!-- A box that sits in a row of controls, so it carries its own gap. -->
+        <Style x:Key="InlineTextBox" TargetType="TextBox">
+            <Setter Property="Padding" Value="6,4" />
+            <Setter Property="BorderBrush" Value="{StaticResource InputBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Margin" Value="0,0,10,0" />
+        </Style>
+
+        <!-- A grid cell clips rather than trims, so a long folder path or a SOAP
+             fault is cut off mid-word with nothing to say it was. The tooltip
+             carries the whole value. -->
+        <Style x:Key="CellText" TargetType="TextBlock">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="ToolTip"
+                    Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+        </Style>
+    </Application.Resources>
+</Application>

@@ -1,0 +1,93 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Windows.Input;
+using PanoptoScheduler.Core.Diagnostics;
+
+namespace PanoptoScheduler.App.ViewModels;
+
+public abstract class ObservableObject : INotifyPropertyChanged
+{
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    protected void Raise([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    protected bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return false;
+        field = value;
+        Raise(name);
+        return true;
+    }
+}
+
+/// <summary>Command that runs an async operation and blocks re-entry while it runs.</summary>
+public sealed class AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecute = null) : ICommand
+{
+    private bool _running;
+
+    public event EventHandler? CanExecuteChanged;
+
+    public bool CanExecute(object? parameter) => !_running && (canExecute?.Invoke() ?? true);
+
+    public async void Execute(object? parameter)
+    {
+        if (!CanExecute(parameter)) return;
+
+        _running = true;
+        RaiseCanExecuteChanged();
+        try
+        {
+            await execute();
+        }
+        finally
+        {
+            _running = false;
+            RaiseCanExecuteChanged();
+        }
+    }
+
+    public void RaiseCanExecuteChanged()
+        => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+}
+
+public sealed class RelayCommand(Action execute, Func<bool>? canExecute = null) : ICommand
+{
+    public event EventHandler? CanExecuteChanged;
+
+    public bool CanExecute(object? parameter) => canExecute?.Invoke() ?? true;
+
+    public void Execute(object? parameter) => execute();
+
+    public void RaiseCanExecuteChanged()
+        => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+}
+
+/// <summary>
+/// The one place a caught exception becomes something on screen.
+///
+/// <para><b>Three things happen to every exception, and they have to happen
+/// together.</b> The whole chain is written to the log, because the one-line
+/// summary is allowed to be vague and the log is what makes that safe. The
+/// summary goes on the status line, because a SOAP fault body is not a sentence
+/// for a recording-desk operator. And the full text goes on that line's tooltip,
+/// because otherwise the friendly version would be a dead end — an operator who
+/// wants to send the detail on has to have it to hand.</para>
+///
+/// <para>Each view model sets its own <c>Status</c> — the sentence above the
+/// detail line differs by operation, and it is the part that says what was being
+/// attempted — so this only covers the two that are the same everywhere.</para>
+/// </summary>
+internal static class Problem
+{
+    /// <summary>
+    /// Logs <paramref name="error"/> under <paramref name="context"/> and returns
+    /// the pair to put on screen: the one-line summary, and the full text for its
+    /// tooltip.
+    /// </summary>
+    internal static (string Summary, string Full) Describe(string context, Exception error)
+    {
+        AppLog.Error(context, error);
+        return (ProblemText.Summarise(error), AppLog.Full(error));
+    }
+}

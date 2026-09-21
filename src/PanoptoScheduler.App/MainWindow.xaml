@@ -1,0 +1,1030 @@
+<Window x:Class="PanoptoScheduler.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:PanoptoScheduler.App.ViewModels"
+        Title="Panopto Scheduler" Height="840" Width="1420"
+        MinWidth="900" MinHeight="560"
+        Background="{StaticResource WindowBg}" FontFamily="Segoe UI" FontSize="13">
+
+    <!-- Escape drops the ticks. There was no keyboard binding anywhere in the
+         app, and the only way to undo a selection was to find every block
+         again. -->
+    <Window.InputBindings>
+        <KeyBinding Key="Escape" Command="{Binding ClearSelectionCommand}" />
+
+        <!-- F11, and plain Maximized underneath. Windows already has Win+Up;
+             what was missing is that the calendar did not use the room once it
+             had it, which is a fitting problem and is fixed above. This is the
+             key everyone reaches for anyway.
+
+             Not WindowStyle=None: a borderless full screen loses the title bar
+             and, with it, the obvious way back out. -->
+        <KeyBinding Key="F11" Command="{Binding ToggleFullScreenCommand}" />
+    </Window.InputBindings>
+
+    <DockPanel>
+
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource Surface}" BorderBrush="{StaticResource PanelBorder}"
+                BorderThickness="0,0,0,1" Padding="14,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <Button Content="_Sign in to Panopto"
+                            Style="{StaticResource ToolbarButton}"
+                            Command="{Binding SignInCommand}"
+                            ToolTip="Open Panopto in your browser and sign in" />
+                    <Button Content="Sign _out"
+                            Style="{StaticResource ToolbarButton}"
+                            Command="{Binding SignOutCommand}"
+                            ToolTip="Forget the saved session on this machine" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <!-- The two arrows are glyphs, so neither a screen reader nor
+                         a hovering mouse had anything to go on. -->
+                    <Button Content="◀" Style="{StaticResource ToolbarButton}"
+                            Command="{Binding PreviousWeekCommand}"
+                            ToolTip="Previous week"
+                            AutomationProperties.Name="Previous week" />
+                    <Button Content="_This week" Style="{StaticResource ToolbarButton}"
+                            Command="{Binding ThisWeekCommand}"
+                            ToolTip="Jump back to the current week" />
+                    <Button Content="▶" Style="{StaticResource ToolbarButton}"
+                            Command="{Binding NextWeekCommand}"
+                            ToolTip="Next week"
+                            AutomationProperties.Name="Next week" />
+                    <Button Content="_Refresh" Style="{StaticResource ToolbarButton}"
+                            Command="{Binding RefreshCommand}"
+                            ToolTip="Reload this week from Panopto" />
+                    <Button Content="_Bulk actions…" Style="{StaticResource ToolbarButton}"
+                            Click="OpenBulk_Click"
+                            ToolTip="Rename, move, webcast or delete the ticked sessions" />
+
+                    <TextBlock Text="{Binding SelectionSummary}" VerticalAlignment="Center"
+                               Margin="0,0,6,0" Foreground="{StaticResource Accent}" FontWeight="SemiBold" />
+
+                    <!-- Only when there is something to clear, so it is not a dead
+                         button most of the time. Escape does the same thing. -->
+                    <Button Content="Clear"
+                            Command="{Binding ClearSelectionCommand}"
+                            ToolTip="Drop the ticks (Escape)">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SelectedCount}" Value="0">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+
+                    <TextBlock Text="{Binding WeekLabel}" VerticalAlignment="Center"
+                               Margin="10,0,0,0" FontWeight="SemiBold" FontSize="14" />
+
+                    <!-- A room filter is easy to forget and makes the week look
+                         empty. It sits beside the week label, which is where the
+                         question "is this week really empty?" gets asked — and it
+                         is a button, so the way out is where the problem is. -->
+                    <Button Margin="10,0,0,0" Foreground="{StaticResource Accent}"
+                            Content="{Binding FilterNote}"
+                            Command="{Binding ClearRoomFilterCommand}"
+                            ToolTip="Show the whole week again"
+                            Visibility="{Binding IsRoomFiltered,
+                                         Converter={StaticResource BoolToVisible}}">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+                                <Setter Property="FontSize" Value="12" />
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal"
+                            HorizontalAlignment="Right" VerticalAlignment="Center">
+
+                    <!-- A glyph, like the week arrows, so it costs almost no
+                         toolbar width at the minimum window size. The tooltip and
+                         the automation name both name the key, so the button is
+                         discoverable without being read about. -->
+                    <Button Content="⛶" Style="{StaticResource ToolbarButton}"
+                            Command="{Binding ToggleFullScreenCommand}"
+                            ToolTip="Fill the screen (F11)"
+                            AutomationProperties.Name="Full screen" />
+
+                    <!-- IsBusy greys the buttons, which reads as "not now" rather
+                         than "working". A load of a week is slow enough that the
+                         difference matters. -->
+                    <ProgressBar IsIndeterminate="True" Width="90" Height="6"
+                                 VerticalAlignment="Center" Margin="10,0,10,0"
+                                 Visibility="{Binding IsBusy,
+                                              Converter={StaticResource BoolToVisible}}" />
+
+                    <StackPanel>
+                        <TextBlock Text="{Binding Status}" HorizontalAlignment="Right"
+                                   FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding Status}" />
+                        <!-- Detail is one plain sentence now, and the tooltip is
+                             the whole exception chain behind it. They used to be
+                             the same string, which meant an operator who wanted
+                             to send the detail on had nothing but the sentence
+                             the app had already decided they could understand. -->
+                        <TextBlock Text="{Binding Detail}" HorizontalAlignment="Right"
+                                   Foreground="{StaticResource Secondary}" FontSize="12"
+                                   TextTrimming="CharacterEllipsis" MaxWidth="520"
+                                   ToolTip="{Binding DetailTooltip}" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Rooms. Colour is a shortcut, not a key: twelve stripes is more than
+             anyone memorises, most people cannot name the difference between two
+             of them, and a red-green colour blindness makes a third of this
+             palette useless. This row is what the stripe is short for, so the
+             stripe can stay a convenience.
+
+             It is the tenant's rooms, not the week's. A room with nothing booked
+             this week is listed and carries no stripe, because the stripe means
+             "on screen right now" — and the header says how many of the total are
+             on show, so the row can never be read as the whole building when it
+             is not.
+
+             A WrapPanel, because a building with twenty rooms should get two
+             tidy rows rather than a row that runs off the edge of the window. -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource Surface}"
+                BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1"
+                Padding="14,8"
+                ToolTipService.ShowOnDisabled="True"
+                Visibility="{Binding ShowsRoomBar, Converter={StaticResource BoolToVisible}}">
+            <DockPanel>
+                <!-- Header and controls. Docked left and right so the rooms flow
+                     between them at any window width. -->
+                <TextBlock DockPanel.Dock="Left" Text="{Binding RoomHeader}"
+                           Style="{StaticResource SecondaryText}"
+                           VerticalAlignment="Center" Margin="0,0,12,0" />
+
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="12,0,0,0">
+                    <TextBox Width="150" Style="{StaticResource InlineTextBox}"
+                             Text="{Binding RoomSearch, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="Find a room by name. Searches every room, not only the ones on show." />
+                    <Button Style="{StaticResource ToolbarButton}" Margin="8,0,0,0"
+                            Content="Reload _rooms"
+                            Command="{Binding ReloadRoomsCommand}"
+                            ToolTip="Re-read the room list from Panopto" />
+                </StackPanel>
+
+                <!-- Says the list stopped short, in the operator's own terms.
+
+                     Docked here rather than shown in a dialog because there is no
+                     moment to interrupt: the list is simply shorter than the
+                     tenant, and it stays that way until someone raises the ceiling.
+                     A banner is dismissable and this is not.
+
+                     The header above carries "(incomplete)" as well, so a reader
+                     who stops at the count still meets the caveat. Both are
+                     driven by one flag, so they cannot disagree. -->
+                <Border DockPanel.Dock="Top" Background="{StaticResource WarningBg}"
+                        BorderBrush="{StaticResource WarningBorder}" BorderThickness="1"
+                        CornerRadius="5" Padding="10,7" Margin="0,7,0,4"
+                        Visibility="{Binding RoomsIncomplete, Converter={StaticResource BoolToVisible}}">
+                    <TextBlock Text="{Binding RoomsIncompleteNote}" TextWrapping="Wrap"
+                               Foreground="{StaticResource WarningText}" />
+                </Border>
+
+                <!-- The rooms. Wrapped, and capped so a 400-room tenant does not
+                     push the calendar off the bottom of the window: past the cap
+                     the list scrolls inside itself instead. -->
+                <StackPanel>
+                    <ItemsControl ItemsSource="{Binding Legend}" MaxHeight="96">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.Template>
+                            <ControlTemplate TargetType="ItemsControl">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled">
+                                    <ItemsPresenter />
+                                </ScrollViewer>
+                            </ControlTemplate>
+                        </ItemsControl.Template>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <!-- A button, not a label: clicking a room filters
+                                     the grid to it, which is how you see a room's
+                                     week even when that week is empty. -->
+                                <Button Command="{Binding Select}" Padding="0" Margin="0,0,14,2"
+                                        Cursor="Hand"
+                                        ToolTip="{Binding Name}">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Chip" CornerRadius="3"
+                                                    Padding="4,2" Background="Transparent">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <!-- Filled for a room on screen; a
+                                                         hollow ring for one that exists
+                                                         but is not booked this week, so
+                                                         the two are told apart by shape
+                                                         and not only by colour. -->
+                                                    <Border x:Name="Stripe" Width="10" Height="10"
+                                                            CornerRadius="2" VerticalAlignment="Center"
+                                                            Margin="0,0,6,0"
+                                                            Background="{Binding Stripe}"
+                                                            BorderBrush="{StaticResource PanelBorder}"
+                                                            BorderThickness="1" />
+                                                    <TextBlock x:Name="Label" Text="{Binding Name}"
+                                                               Style="{StaticResource MutedText}" />
+                                                </StackPanel>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <!-- No booking this week: no stripe. -->
+                                                <DataTrigger Binding="{Binding IsOnScreen}" Value="False">
+                                                    <Setter TargetName="Stripe" Property="Background" Value="Transparent" />
+                                                    <Setter TargetName="Label" Property="Opacity" Value="0.65" />
+                                                </DataTrigger>
+                                                <!-- The room being shown. -->
+                                                <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                                    <Setter TargetName="Chip" Property="Background" Value="{StaticResource PanelBorder}" />
+                                                    <Setter TargetName="Label" Property="FontWeight" Value="SemiBold" />
+                                                    <Setter TargetName="Label" Property="Opacity" Value="1" />
+                                                </DataTrigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Chip" Property="Background" Value="{StaticResource PanelBorder}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <!-- The rest of the building, and the way back to the week.
+                         Only when there is something behind it. -->
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <CheckBox Content="{Binding ShowAllRoomsLabel}"
+                                  IsChecked="{Binding ShowAllRooms}"
+                                  Foreground="{StaticResource Muted}"
+                                  Visibility="{Binding HasHiddenRooms,
+                                               Converter={StaticResource BoolToVisible}}" />
+                        <Button Style="{StaticResource ToolbarButton}" Margin="10,0,0,0"
+                                Content="_Show this week"
+                                Command="{Binding ClearRoomFilterCommand}"
+                                Visibility="{Binding IsRoomFiltered,
+                                             Converter={StaticResource BoolToVisible}}" />
+                    </StackPanel>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Week grid.
+
+             Four panes, and only one of them scrolls. It used to be a single
+             ScrollViewer holding one horizontal StackPanel, so the day names and
+             the hour labels scrolled away with the bookings — scrolled to the
+             bottom of a day, the reader lost track of which day and which hour
+             they were looking at, which is the entire question a calendar
+             answers.
+
+             The header and the gutter are slid by a TranslateTransform bound to
+             the scroller's own offsets. That works because a ScrollViewer's
+             offsets are read-only only as a binding *target*; as a source they
+             are ordinary properties. It also has to be a transform rather than a
+             second ScrollViewer kept in step: the body's vertical scrollbar
+             makes its viewport 17px narrower than the header's, so a
+             synchronised header scroller could never reach the body's rightmost
+             offset and the last column would sit misaligned.
+
+             The clip has to live on an untransformed parent. ClipToBounds clips
+             an element's output to its own layout slot, and that slot travels
+             with the element's render transform — so a clipped element that is
+             also translated slides out from under its own clip. -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <!-- The calendar takes what is left; the panel takes its own
+                     width and nothing when it is closed. -->
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- An empty week and a failed load look identical as seven blank
+                 columns, and they want opposite things from the reader. The
+                 message says which one this is — and it names the room when a
+                 room filter is on, because "nothing is booked" and "nothing is
+                 booked in the room you filtered to" want different next steps. -->
+            <TextBlock Text="{Binding EmptyWeekMessage}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       FontSize="14" Foreground="{StaticResource Muted}"
+                       Visibility="{Binding IsWeekEmpty,
+                                    Converter={StaticResource BoolToVisible}}" />
+
+            <!-- The details panel, in its own column beside the calendar.
+
+                 Outside DayScroller, outside both clipped borders and outside
+                 both translate transforms, so the freeze mechanism is untouched
+                 — nothing was added inside the scroller, so the panel cannot
+                 scroll with the bookings.
+
+                 The column is Auto rather than a fixed width, and the panel
+                 collapses when nothing is selected. A permanently reserved 340px
+                 would narrow the calendar on every launch to make room for a
+                 panel with nothing in it, and the calendar filling the window is
+                 the thing being fixed in the first place.
+
+                 No GridSplitter: a splitter between an Auto column and a
+                 collapsing one has to be hidden and shown in step with it, and a
+                 drag that leaves the column at a width the collapse then throws
+                 away is worse than a width the operator cannot drag. -->
+            <Grid Grid.Column="0" Margin="14,12,14,20">
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsWeekEmpty}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
+
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- Day names. Slides sideways with the bookings, never vertically.
+
+                     Centred, and padded on the right by whatever the bookings
+                     pane lost to its own scrollbar — both panes are centred
+                     independently, so they only stay over each other if they are
+                     centred in the same box. See CalendarViewModel.ScrollbarInset. -->
+                <Border Grid.Row="0" Grid.Column="1" ClipToBounds="True"
+                        Height="{x:Static vm:CalendarViewModel.HeaderHeight}"
+                        Padding="{Binding HeaderInset}">
+                    <ItemsControl ItemsSource="{Binding Days}"
+                                  HorizontalAlignment="Center">
+                        <ItemsControl.RenderTransform>
+                            <TranslateTransform X="{Binding HorizontalOffset,
+                                                           ElementName=DayScroller}" />
+                        </ItemsControl.RenderTransform>
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="{x:Static vm:CalendarViewModel.CellGap}">
+                                    <!-- AncestorType=Window, not a plain Binding:
+                                         this template's DataContext is a
+                                         DayColumnViewModel, so {Binding ColumnWidth}
+                                         here compiles, resolves to nothing, and
+                                         draws silently wrong. Same technique as
+                                         HourMarks below. -->
+                                    <StackPanel Width="{Binding DataContext.ColumnWidth,
+                                                        RelativeSource={RelativeSource AncestorType=Window}}"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Bottom"
+                                                Margin="0,0,0,6">
+                                        <TextBlock Text="{Binding Header}" FontWeight="SemiBold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource Ink}" />
+                                                    <Style.Triggers>
+                                                        <!-- IsToday was computed on every
+                                                             rebuild and bound to nothing. -->
+                                                        <DataTrigger Binding="{Binding IsToday}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource Accent}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding SubHeader}" FontSize="11"
+                                                   Foreground="{StaticResource Muted}" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+
+                <!-- Hour gutter. Slides vertically with the bookings, never
+                     sideways, so "7 AM" stays level with the 7 AM rule. -->
+                <Border Grid.Row="1" Grid.Column="0" ClipToBounds="True">
+                    <ItemsControl ItemsSource="{Binding HourMarks}"
+                                  Width="58" HorizontalAlignment="Left"
+                                  Margin="0,0,6,0">
+                        <ItemsControl.RenderTransform>
+                            <TranslateTransform Y="{Binding VerticalOffset,
+                                                           ElementName=DayScroller}" />
+                        </ItemsControl.RenderTransform>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <!-- One cell per hour, so the labels come from the
+                                     same list and the same height the grid is drawn
+                                     against. The labels used to be a fixed column of
+                                     16 numbers beside a tiled brush whose viewport
+                                     said 176x56 in another file: change one and the
+                                     other silently drifted. -->
+                                <!-- AncestorType=Window: this template's
+                                     DataContext is the hour string, so a plain
+                                     {Binding HourHeight} would resolve to nothing
+                                     and draw every row at zero height — a blank
+                                     gutter with no error logged. -->
+                                <Border Height="{Binding DataContext.HourHeight,
+                                                 RelativeSource={RelativeSource AncestorType=Window}}">
+                                    <TextBlock Text="{Binding}" FontSize="11"
+                                               Foreground="{StaticResource Muted}"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Top" />
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+
+                <!-- The bookings. The only thing that scrolls.
+
+                     Centred so that at the ceiling — where the columns stop
+                     growing — the leftover becomes margin rather than a band of
+                     dead space on the right. Below the ceiling the fit makes the
+                     columns fill the viewport exactly, so centring changes
+                     nothing. -->
+                <ScrollViewer x:Name="DayScroller" Grid.Row="1" Grid.Column="1"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto"
+                              SizeChanged="DayScroller_SizeChanged"
+                              ScrollChanged="DayScroller_ScrollChanged">
+                    <ItemsControl ItemsSource="{Binding Days}"
+                                  HorizontalAlignment="Center">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <!-- The column is ColumnWidth wide and the cell is
+                                     ColumnPitch wide, so the gap between days is
+                                     ColumnPitch - ColumnWidth and is written down
+                                     once, in the view model. -->
+                                <Border Width="{Binding DataContext.ColumnWidth,
+                                                RelativeSource={RelativeSource AncestorType=Window}}"
+                                        Margin="{x:Static vm:CalendarViewModel.CellGap}"
+                                        CornerRadius="5" ClipToBounds="True">
+                                    <!-- The background and border sit in the style
+                                         rather than on the element, so the today
+                                         trigger can override them: a value set on
+                                         the element itself wins over any style
+                                         setter, trigger included. -->
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Background" Value="{StaticResource Surface}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource PanelBorder}" />
+                                            <Setter Property="BorderThickness" Value="1" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsToday}" Value="True">
+                                                    <Setter Property="Background" Value="{StaticResource AccentSoft}" />
+                                                    <Setter Property="BorderBrush" Value="{StaticResource AccentSoftBorder}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+
+                                    <Grid>
+                                        <!-- Hour rules, one cell per hour. A rule at
+                                             the top of each cell, so every label in
+                                             the gutter sits directly under its own
+                                             rule; the closing 23:00 edge is the
+                                             border. Previously the rules were at the
+                                             foot of each tile, which left 11 PM with
+                                             a rule and no label and 7 AM with a label
+                                             and no rule. -->
+                                        <ItemsControl ItemsSource="{Binding DataContext.HourMarks,
+                                                                   RelativeSource={RelativeSource AncestorType=Window}}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Height="{Binding DataContext.HourHeight,
+                                                                     RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            BorderBrush="{StaticResource HourRule}"
+                                                            BorderThickness="0,1,0,0" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <ItemsControl ItemsSource="{Binding Blocks}"
+                                                      Height="{Binding DataContext.GridHeight,
+                                                               RelativeSource={RelativeSource AncestorType=Window}}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <Canvas />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                                                    <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
+
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Width="{Binding Width}" Height="{Binding Height}"
+                                                            CornerRadius="4" ToolTip="{Binding Tooltip}"
+                                                            Background="{StaticResource Surface}" BorderThickness="0,0,0,0"
+                                                            Margin="1,1,2,1"
+                                                            MouseLeftButtonDown="Block_MouseLeftButtonDown"
+                                                            MouseMove="Block_MouseMove"
+                                                            MouseLeftButtonUp="Block_MouseLeftButtonUp">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Cursor" Value="Arrow" />
+                                                                <Style.Triggers>
+                                                                    <!-- Nothing on screen said a block
+                                                                         could be dragged except the
+                                                                         tooltip, which needs a hover to
+                                                                         find. -->
+                                                                    <DataTrigger Binding="{Binding CanReschedule}"
+                                                                                 Value="True">
+                                                                        <Setter Property="Cursor" Value="SizeAll" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <Border.Effect>
+                                                            <DropShadowEffect BlurRadius="6" ShadowDepth="1"
+                                                                              Opacity="0.16" Color="#334155" />
+                                                        </Border.Effect>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="4" />
+                                                                <ColumnDefinition Width="*" />
+                                                            </Grid.ColumnDefinitions>
+
+                                                            <Border Grid.Column="0" Background="{Binding Accent}"
+                                                                    CornerRadius="4,0,0,4" />
+
+                                                            <StackPanel Grid.Column="1" Margin="6,3,4,2"
+                                                                        ClipToBounds="True">
+                                                                <TextBlock Text="{Binding Title}"
+                                                                           FontSize="11" FontWeight="SemiBold"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           ToolTip="{Binding Title}" />
+
+                                                                <!-- A short block has room for the title or
+                                                                     for the time, not both. Dropping the time
+                                                                     is better than drawing it sliced in half —
+                                                                     and the time is still in the tooltip. -->
+                                                                <StackPanel Orientation="Horizontal"
+                                                                            Visibility="{Binding ShowTime,
+                                                                                         Converter={StaticResource BoolToVisible}}">
+                                                                    <TextBlock Text="{Binding Starts}" FontSize="10"
+                                                                               Foreground="{StaticResource Secondary}" />
+
+                                                                    <!-- A session with no reliable start
+                                                                         time is drawn at an hour that is a
+                                                                         guess. Saying so in a tooltip alone
+                                                                         meant it was only visible to someone
+                                                                         who already suspected it. -->
+                                                                    <TextBlock Text="⚠" FontSize="10"
+                                                                               Margin="4,0,0,0"
+                                                                               Foreground="{StaticResource Caution}"
+                                                                               ToolTip="The start time is a guess: this session reported no reliable time."
+                                                                               Visibility="{Binding Unreliable,
+                                                                                            Converter={StaticResource BoolToVisible}}" />
+                                                                </StackPanel>
+                                                            </StackPanel>
+
+                                                            <!-- Ticking is how a session is handed to the
+                                                                 bulk tools. Hidden where there is no id to
+                                                                 act on, rather than offering a tick that
+                                                                 would silently do nothing. -->
+                                                            <CheckBox Grid.Column="1"
+                                                                      HorizontalAlignment="Right"
+                                                                      VerticalAlignment="Top"
+                                                                      Margin="0,3,4,0"
+                                                                      IsChecked="{Binding IsSelected}"
+                                                                      Visibility="{Binding CanSelect,
+                                                                                   Converter={StaticResource BoolToVisible}}"
+                                                                      Checked="Block_SelectionChanged"
+                                                                      Unchecked="Block_SelectionChanged"
+                                                                      ToolTip="Tick to include in bulk actions" />
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+
+            <!-- Everything read here comes off SelectedBlock.Session, so the
+                 panel is a view of the session rather than a second copy of it
+                 held beside the grid — after a rebuild it shows the refreshed
+                 values, and if the session has gone from the week it closes
+                 rather than describing something that is no longer drawn.
+
+                 The writable half at the foot of the scroller is bound through
+                 the Window rather than through this DockPanel's DataContext,
+                 which is the block. That is not a style choice: a binding that
+                 inherits the block's context resolves against the wrong object
+                 and gives no warning worth reading. -->
+
+            <!-- The panel sits outside DayScroller and outside both ClipToBounds
+                 borders, so it cannot scroll with the bookings and the frozen
+                 header and gutter are untouched by it. -->
+            <Border Grid.Column="1"
+                    Width="340"
+                    Background="{StaticResource Surface}"
+                    BorderBrush="{StaticResource PanelBorder}"
+                    BorderThickness="1,0,0,0"
+                    Visibility="{Binding HasSelectedBlock,
+                                 Converter={StaticResource BoolToVisible}}">
+                <DockPanel DataContext="{Binding SelectedBlock}">
+                    <Border DockPanel.Dock="Top" Padding="12,10"
+                            BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="Close"
+                                    Style="{StaticResource ToolbarButton}"
+                                    Command="{Binding DataContext.ClearDetailsCommand,
+                                              RelativeSource={RelativeSource AncestorType=Window}}" />
+                            <TextBlock Text="Recording" Style="{StaticResource HeaderText}"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Border>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="12,10">
+                        <StackPanel>
+                            <TextBlock Text="{Binding Title}" Style="{StaticResource HeaderText}"
+                                       TextWrapping="Wrap" />
+
+                            <!-- Panopto keeps two names for a recording and this
+                                 one is only shown when it differs from the title
+                                 above, so the panel never prints one string twice
+                                 under two labels. -->
+                            <TextBlock Text="{Binding OtherName}" Style="{StaticResource MutedText}"
+                                       TextWrapping="Wrap" Margin="0,2,0,0"
+                                       Visibility="{Binding HasOtherName,
+                                                    Converter={StaticResource BoolToVisible}}" />
+
+                            <TextBlock Text="{Binding TimeRange}"
+                                       Style="{StaticResource MutedText}" Margin="0,6,0,0" />
+
+                            <TextBlock Text="{Binding DateText}"
+                                       Style="{StaticResource MutedText}" Margin="0,2,0,0" />
+
+                            <!-- Why the time may be worth doubting, said once
+                                 where the times are rather than at the foot of a
+                                 scroller the operator may never reach. -->
+                            <TextBlock Text="This session reported no start time, so its position is an estimate."
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                       Visibility="{Binding Unreliable,
+                                                    Converter={StaticResource BoolToVisible}}" />
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Room" Margin="0,12,0,2" />
+                            <TextBlock Text="{Binding Recorder}" Style="{StaticResource CellText}"
+                                       TextWrapping="Wrap" />
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Folder" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding Folder}" Style="{StaticResource CellText}"
+                                       TextWrapping="Wrap" />
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Length" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding DurationText}" Style="{StaticResource CellText}" />
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Status" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding StatusLabel}" Style="{StaticResource CellText}" />
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Webcast" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding Webcast}" Style="{StaticResource CellText}"
+                                       TextWrapping="Wrap" />
+
+                            <!-- Only when there are names to give. An empty
+                                 "Presenters" heading over an empty box is a
+                                 question the operator cannot answer. -->
+                            <StackPanel Visibility="{Binding HasPresenters,
+                                                     Converter={StaticResource BoolToVisible}}">
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Presenters"
+                                           Margin="0,10,0,2" />
+                                <TextBlock Text="{Binding Presenters}" Style="{StaticResource CellText}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Owner" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding Owner}" Style="{StaticResource CellText}"
+                                       TextWrapping="Wrap" />
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Views" Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding Views}" Style="{StaticResource CellText}" />
+
+                            <!-- Editable and movable are different questions and
+                                 the panel answers both, because a completed
+                                 recording is readable and not movable and the
+                                 operator should not have to work that out from
+                                 a dead drag. -->
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Can be moved"
+                                       Margin="0,10,0,2" />
+                            <TextBlock>
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+                                        <!-- "Not scheduled" was the first wording
+                                             and it was only right for part of what
+                                             reaches this branch: a recording that
+                                             already happened is scheduled and
+                                             finished, so the sentence has to name
+                                             the rule rather than the row. -->
+                                        <Setter Property="Text"
+                                                Value="No — only a scheduled recording has a time left to move." />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CanReschedule}" Value="True">
+                                                <Setter Property="Text" Value="Yes — drag it on the calendar." />
+                                            </DataTrigger>
+                                            <!-- Not the same answer as "no", and the
+                                                 one the operator can take to an
+                                                 administrator. -->
+                                            <DataTrigger Binding="{Binding MoveRefused}" Value="True">
+                                                <Setter Property="Text"
+                                                        Value="Panopto refused it. This account can see the recording but cannot change its schedule." />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <!-- What Panopto says about this account, as opposed
+                                 to what the app will let you do with it. The two
+                                 are not the same and the measured case is a
+                                 session that reports write access and refuses the
+                                 write. -->
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="This account"
+                                       Margin="0,10,0,2" />
+                            <TextBlock Text="{Binding Permissions}" Style="{StaticResource CellText}"
+                                       TextWrapping="Wrap" />
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Session id"
+                                       Margin="0,10,0,2" />
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Copy"
+                                        Style="{StaticResource ToolbarButton}"
+                                        Margin="8,0,0,0"
+                                        Command="{Binding DataContext.CopySessionIdCommand,
+                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                        AutomationProperties.Name="Copy the session id"
+                                        ToolTip="Copy the session id to the clipboard" />
+                                <!-- Selectable, so an id can be dragged out by
+                                     hand when the clipboard is held by something
+                                     else. A TextBlock would make the fallback
+                                     impossible. -->
+                                <TextBox Text="{Binding SessionIdText, Mode=OneWay}"
+                                         Style="{StaticResource InlineTextBox}"
+                                         IsReadOnly="True" TextWrapping="Wrap"
+                                         VerticalAlignment="Center" />
+                            </DockPanel>
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="In Panopto"
+                                       Margin="0,12,0,2" />
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                                           Margin="0,0,0,4"
+                                           Visibility="{Binding ReportsWritable,
+                                                        Converter={StaticResource BoolToVisible}}">
+                                    Where the same recording can be changed with Panopto's own tools.
+                                </TextBlock>
+                                <TextBlock Style="{StaticResource CellText}" TextWrapping="Wrap"
+                                           Text="No link was reported for this session."
+                                           Visibility="{Binding HasViewerUrl,
+                                                        Converter={StaticResource InverseBoolToVisible}}" />
+                                <!-- Hyperlinks rather than Buttons, because the
+                                     destination is a URL and the operator's
+                                     expectation of a link is that it opens in a
+                                     browser. RequestNavigate is handled rather
+                                     than relying on NavigateUri alone, which only
+                                     works for a frame's own navigation, and the
+                                     handler validates the scheme before launching
+                                     anything: these URLs come from Panopto's JSON
+                                     and UseShellExecute resolves any registered
+                                     scheme, so an unchecked one is a program
+                                     launch rather than a web page.
+
+                                     The link text sits directly in the Hyperlink
+                                     so it becomes a Run. Wrapping it in a
+                                     TextBlock also loads, because the parser turns
+                                     the element into an InlineUIContainer, but
+                                     that takes the text out of the inline flow and
+                                     gives it a box of its own for no gain.
+
+                                     Deliberately not the CellText style, which
+                                     binds its tooltip to its own Text: these
+                                     blocks have no Text of their own, so that
+                                     would be an empty tooltip box rather than the
+                                     URL, and the URL is set on the Hyperlink. -->
+                                <TextBlock TextWrapping="Wrap"
+                                           Visibility="{Binding HasViewerUrl,
+                                                        Converter={StaticResource BoolToVisible}}">
+                                    <Hyperlink NavigateUri="{Binding ViewerUrl}"
+                                               RequestNavigate="Link_RequestNavigate"
+                                               Foreground="{StaticResource Accent}"
+                                               ToolTip="{Binding ViewerUrl}">Open the viewer page</Hyperlink>
+                                </TextBlock>
+                                <TextBlock TextWrapping="Wrap" Margin="0,3,0,0"
+                                           Visibility="{Binding HasEditorUrl,
+                                                        Converter={StaticResource BoolToVisible}}">
+                                    <Hyperlink NavigateUri="{Binding EditorUrl}"
+                                               RequestNavigate="Link_RequestNavigate"
+                                               Foreground="{StaticResource Accent}"
+                                               ToolTip="{Binding EditorUrl}">Open the editor page</Hyperlink>
+                                </TextBlock>
+                            </StackPanel>
+
+                            <!-- ==== Editing ====
+
+                                 Shown only for a session this account can write
+                                 to, which is the same gate the editor link above
+                                 uses: offering a form whose every button fails is
+                                 worse than not offering it.
+
+                                 <b>No preview and no permit here</b>, which is the
+                                 one place this app deviates from its bulk path and
+                                 deliberately. A bulk write cannot be reviewed
+                                 before it happens, so it is previewed and the
+                                 irreversible one is gated behind a typed permit.
+                                 A single write from this panel is made while the
+                                 operator is looking at the thing being changed,
+                                 and one of them is visible on the calendar the
+                                 moment it lands. The line, stated once: bulk
+                                 writes are previewed, single writes are not,
+                                 nothing irreversible happens without a permit.
+
+                                 Every command is bound through the Window, not
+                                 through the inherited DataContext: this whole
+                                 DockPanel is scoped to SelectedBlock, so a plain
+                                 {Binding ApplyNameCommand} would resolve against
+                                 the block, find nothing, and disable the button
+                                 with no binding warning worth reading. -->
+                            <StackPanel Visibility="{Binding ReportsWritable,
+                                                     Converter={StaticResource BoolToVisible}}">
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Edit this recording"
+                                           Margin="0,16,0,2" />
+
+                                <!-- Where the panel says what it last did, or
+                                     refused to do. Kept here rather than only on
+                                     the status line at the foot of the window,
+                                     which is where the drag path reports: a drag
+                                     moves the block, so its result is visible
+                                     where the operator is already looking, and a
+                                     form is the case where it is not. A refusal
+                                     is a warning rather than an error, because
+                                     nothing was changed. -->
+                                <Border Padding="8,6" Margin="0,0,0,8"
+                                        Background="{StaticResource WarningBg}"
+                                        BorderBrush="{StaticResource WarningBorder}"
+                                        BorderThickness="1"
+                                        Visibility="{Binding DataContext.HasEditNote,
+                                                     RelativeSource={RelativeSource AncestorType=Window},
+                                                     Converter={StaticResource BoolToVisible}}">
+                                    <TextBlock TextWrapping="Wrap"
+                                               Foreground="{StaticResource WarningText}"
+                                               Text="{Binding DataContext.EditNote,
+                                                      RelativeSource={RelativeSource AncestorType=Window}}" />
+                                </Border>
+
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Name" Margin="0,0,0,2" />
+                                <TextBox Style="{StaticResource FieldTextBox}"
+                                         Text="{Binding DataContext.EditName,
+                                                RelativeSource={RelativeSource AncestorType=Window},
+                                                UpdateSourceTrigger=PropertyChanged}" />
+                                <Button Content="Rename" Style="{StaticResource WriteButton}"
+                                        HorizontalAlignment="Left" Margin="0,6,0,0"
+                                        Command="{Binding DataContext.ApplyNameCommand,
+                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                        ToolTip="Rename this recording in Panopto"
+                                        ToolTipService.ShowOnDisabled="True" />
+
+                                <!-- Labelled as what it is on the wire, not as
+                                     what the AV team uses it for. The legacy tool
+                                     writes the presenter into this field because
+                                     the scheduling call has no field for one, and
+                                     a heading that said only "Presenter" would
+                                     hide that it overwrites whatever else is
+                                     there. -->
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Description (where the presenter goes)"
+                                           Margin="0,12,0,2" TextWrapping="Wrap" />
+                                <TextBox Style="{StaticResource FieldTextBox}"
+                                         AcceptsReturn="True" TextWrapping="Wrap"
+                                         MinHeight="52" VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding DataContext.EditDescription,
+                                                RelativeSource={RelativeSource AncestorType=Window},
+                                                UpdateSourceTrigger=PropertyChanged}" />
+                                <Button Content="Save description" Style="{StaticResource WriteButton}"
+                                        HorizontalAlignment="Left" Margin="0,6,0,0"
+                                        Command="{Binding DataContext.ApplyDescriptionCommand,
+                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                        ToolTip="Replace the whole description with what is in the box. Clear the box to empty it."
+                                        ToolTipService.ShowOnDisabled="True" />
+
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Time" Margin="0,12,0,2" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.35*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- Free text, parsed by the importer's own
+                                         parser rather than a date picker, so a
+                                         date typed here and the same date in the
+                                         spreadsheet it was copied from cannot
+                                         mean different things. -->
+                                    <TextBox Grid.Column="0" Style="{StaticResource FieldTextBox}"
+                                             Margin="0,0,4,0"
+                                             Text="{Binding DataContext.EditDate,
+                                                    RelativeSource={RelativeSource AncestorType=Window},
+                                                    UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBox Grid.Column="1" Style="{StaticResource FieldTextBox}"
+                                             Margin="0,0,4,0"
+                                             Text="{Binding DataContext.EditStart,
+                                                    RelativeSource={RelativeSource AncestorType=Window},
+                                                    UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBox Grid.Column="2" Style="{StaticResource FieldTextBox}"
+                                             Text="{Binding DataContext.EditEnd,
+                                                    RelativeSource={RelativeSource AncestorType=Window},
+                                                    UpdateSourceTrigger=PropertyChanged}" />
+                                </Grid>
+                                <TextBlock Style="{StaticResource MutedText}" Margin="0,3,0,0"
+                                           Text="Date, start and end, in the room's own clock." />
+                                <Button Content="Move to this time" Style="{StaticResource WriteButton}"
+                                        HorizontalAlignment="Left" Margin="0,6,0,0"
+                                        Command="{Binding DataContext.ApplyRetimeCommand,
+                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                        ToolTip="Reschedule this recording. Small shifts are quicker to drag on the calendar."
+                                        ToolTipService.ShowOnDisabled="True" />
+
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Folder" Margin="0,12,0,2" />
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right" Content="Find"
+                                            Style="{StaticResource ToolbarButton}" Margin="6,0,0,0"
+                                            Command="{Binding DataContext.FindFoldersCommand,
+                                                      RelativeSource={RelativeSource AncestorType=Window}}"
+                                            ToolTip="Look up folders whose name contains what is typed"
+                                            ToolTipService.ShowOnDisabled="True" />
+                                    <!-- Editable rather than a plain picker: the
+                                         move takes the name typed here and
+                                         resolves it in Panopto, where a guid
+                                         works too, and the resolution is the
+                                         code that knows to refuse a name it could
+                                         not verify. A picker that had to be
+                                         filled before anything could be typed
+                                         would be the one path around it. -->
+                                    <ComboBox IsEditable="True"
+                                              ItemsSource="{Binding DataContext.FolderChoices,
+                                                            RelativeSource={RelativeSource AncestorType=Window}}"
+                                              Text="{Binding DataContext.EditFolder,
+                                                     RelativeSource={RelativeSource AncestorType=Window},
+                                                     UpdateSourceTrigger=PropertyChanged}"
+                                              Padding="6,4" />
+                                </DockPanel>
+                                <Button Content="Move here" Style="{StaticResource WriteButton}"
+                                        HorizontalAlignment="Left" Margin="0,6,0,0"
+                                        Command="{Binding DataContext.ApplyMoveCommand,
+                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                        ToolTip="Move this recording into a folder, by name or by guid"
+                                        ToolTipService.ShowOnDisabled="True" />
+
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Webcast" Margin="0,12,0,2" />
+                                <CheckBox Content="Broadcast this recording live"
+                                          IsChecked="{Binding DataContext.EditBroadcast,
+                                                      RelativeSource={RelativeSource AncestorType=Window}}" />
+                                <Button Content="Apply webcast" Style="{StaticResource WriteButton}"
+                                        HorizontalAlignment="Left" Margin="0,6,0,0"
+                                        Command="{Binding DataContext.ApplyBroadcastCommand,
+                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                        ToolTip="Turn live webcasting on or off for this recording"
+                                        ToolTipService.ShowOnDisabled="True" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

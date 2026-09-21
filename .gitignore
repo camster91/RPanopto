@@ -360,3 +360,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# The packaged app carries the OAuth client in defaults.json, and must never
+# be committed. src/publish.ps1 writes it, and the zip is distributed by hand.
+src/dist/
+dist/

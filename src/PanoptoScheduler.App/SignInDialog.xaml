@@ -1,0 +1,66 @@
+<Window x:Class="PanoptoScheduler.App.SignInDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Panopto Scheduler — sign in" Height="380" Width="540"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="{StaticResource WindowBg}" FontFamily="Segoe UI" FontSize="13">
+
+    <!-- No Window.Resources: BoolToVisible and the dialog button style are two of
+         the four copies that used to be spread across the windows, and both are
+         declared once in App.xaml now. -->
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock Text="Sign in to Panopto" FontSize="18" FontWeight="SemiBold" />
+            <!-- The reason, injected from the caller. Being asked to sign in with
+                 no explanation reads as a bug. -->
+            <TextBlock x:Name="ReasonText" TextWrapping="Wrap" Foreground="{StaticResource Secondary}" Margin="0,6,0,0" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="1" TextWrapping="Wrap" Foreground="{StaticResource Secondary}" Margin="0,0,0,14"
+                   Text="Your browser will open so you can sign in with your usual Panopto account. This app never sees your password." />
+
+        <TextBlock Grid.Row="2" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,6"
+                   Text="{Binding Status}" />
+
+        <!-- Only shown when the browser did not open. On a locked-down machine
+             that is the normal case, and without this the user has nothing to
+             click and the prompt is a dead end. -->
+        <StackPanel Grid.Row="3" VerticalAlignment="Top"
+                    Visibility="{Binding HasSignInUrl, Converter={StaticResource BoolToVisible}}">
+            <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Secondary}" Margin="0,0,0,6"
+                       Text="If no browser window appeared, open this address yourself:" />
+            <TextBox Style="{StaticResource FieldTextBox}"
+                     Text="{Binding SignInUrl, Mode=OneWay}" IsReadOnly="True"
+                     TextWrapping="Wrap"
+                     Background="{StaticResource Surface}"
+                     AutomationProperties.Name="Sign-in address"
+                     AutomationProperties.HelpText="Open this address in a browser to sign in"
+                     ToolTip="Select and copy this address into your browser" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="4" Margin="0,12,0,0">
+            <TextBlock Style="{StaticResource MutedText}"
+                       Text="{Binding Detail}" TextWrapping="Wrap" Margin="0,0,0,12"
+                       ToolTip="{Binding Detail}" />
+            <!-- Tab lands on "Sign in" first, the reverse of document order, because
+                 signing in is the only reason this dialog opened. The default button
+                 is already Enter; this makes it Tab as well. -->
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="_Not now" Style="{StaticResource DialogButton}"
+                        IsCancel="True" Margin="0,0,10,0" TabIndex="1" />
+                <Button x:Name="SignInButton" Content="_Sign in" Style="{StaticResource DialogButton}"
+                        IsDefault="True" Click="OnSignInClick" TabIndex="0" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>
