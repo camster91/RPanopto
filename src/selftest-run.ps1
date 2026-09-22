@@ -52,14 +52,19 @@ foreach ($flag in $flags.Keys | Sort-Object)
 
     if (-not $closed) { $p.Kill(); $p.WaitForExit(5000) | Out-Null }
 
-    # Assigned plainly, and only when the file is there. Get-Content -Raw on a
-    # 0-byte file gives $null in this shell, and .Trim() on it throws where the
-    # empty output was the whole answer.
+    # Read through a guard, not through a cast. Get-Content -Raw on a 0-byte
+    # file gives $null in this shell, and casting that to [string] does NOT
+    # neutralise it here -- measured on Windows PowerShell 5.1, where the cast
+    # of a cmdlet result left $null where the cast of a literal $null gives ''.
+    # The cast that used to be here therefore still produced $null, and .Trim()
+    # threw on it. The interactive fixtures write nothing to stdout, so an empty
+    # file is the ordinary case for them rather than an edge case: it looked
+    # like the script had failed when it had simply been given no output.
     $text = ''
     $errs = ''
 
-    if (Test-Path $stdout) { $text = [string](Get-Content $stdout -Raw) }
-    if (Test-Path $stderr) { $errs = [string](Get-Content $stderr -Raw) }
+    if (Test-Path $stdout) { $raw = Get-Content $stdout -Raw; if ($null -ne $raw) { $text = [string]$raw } }
+    if (Test-Path $stderr) { $raw = Get-Content $stderr -Raw; if ($null -ne $raw) { $errs = [string]$raw } }
 
     $how = if ($closed) { "closed itself, exit $($p.ExitCode)" } else { 'stayed open (killed)' }
 
