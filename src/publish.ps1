@@ -5,7 +5,16 @@
 .DESCRIPTION
     Publishes the app self-contained for 64-bit Windows, puts the tenant and
     OAuth client beside the executable as defaults.json so the first run asks
-    the user for nothing, and zips the result.
+    the user for nothing, adds the per-user installer from src\package, and zips
+    the result.
+
+    The installer is Install.cmd plus two PowerShell scripts, not a packaged
+    installer .exe: a self-extracting executable is the exact shape the endpoint
+    protection on the workstations deletes on execution, and an .msi would need
+    an administrator. Three readable files also happen to be the version of
+    this that IT can audit. Running the exe from the unzipped folder still
+    works; installing is optional and only adds shortcuts and an entry in
+    Settings > Apps.
 
     The client secret comes from the packager's own credentials file and is
     never printed. It has to travel inside the package: Panopto has no
@@ -158,6 +167,23 @@ $json = $out | ConvertTo-Json -Depth 5
 
 Write-Host "  Wrote defaults.json: tenant $($out.tenantUrl), zone $($out.timeZone)."
 
+# The installer travels beside the executable, not inside it. A packaged
+# installer .exe -- Inno, NSIS, anything self-extracting -- is the exact shape
+# the endpoint protection on these machines deletes on execution, so what ships
+# is three readable files. They are copied after defaults.json is written, so
+# nothing here can overwrite it.
+$package = Join-Path $src "package"
+$packageFiles = @("Install.cmd", "install.ps1", "uninstall.ps1")
+$missing = @($packageFiles | Where-Object { -not (Test-Path (Join-Path $package $_)) })
+if ($missing.Count -gt 0) {
+    throw "src\package is missing $($missing -join ', '). The zip would arrive with no way to install it."
+}
+
+foreach ($name in $packageFiles) {
+    Copy-Item (Join-Path $package $name) (Join-Path $publish $name) -Force
+}
+Write-Host "  Added Install.cmd and its two scripts (per-user install, no admin)."
+
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 if (Test-Path $zip) { Remove-Item $zip -Force }
 
@@ -168,7 +194,13 @@ $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "  $zip"
-Write-Host "  $sizeMb MB -- unzip anywhere and run $exeName; nothing to install."
+Write-Host "  $sizeMb MB"
 Write-Host ""
-Write-Host "First run on a machine: launch it, click Sign in, use your own Panopto"
-Write-Host "account in the browser. After that it remembers you."
+Write-Host "On a machine: unzip, then double-click Install.cmd. It installs for the"
+Write-Host "current user only and never asks for an administrator."
+Write-Host ""
+Write-Host "Running $exeName straight from the unzipped folder works too -- that path"
+Write-Host "installs nothing and leaves the registry untouched. Both are supported."
+Write-Host ""
+Write-Host "First run: click Sign in and use your own Panopto account in the browser."
+Write-Host "After that it remembers you."

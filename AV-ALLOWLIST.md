@@ -31,6 +31,13 @@ as a single-file self-extracting bundle — `PublishSingleFile` is off on purpos
 Single-file bundles are deleted on execution by the endpoint protection already
 on these workstations, so the folder form is the one that survives.
 
+A sixth property, only if the person chose to install rather than run it in
+place: the zip carries an installer, which is `Install.cmd` plus two PowerShell
+scripts. It is plain text, it does no self-extraction, and it writes under HKCU
+only — but a script that creates shortcuts and writes a registry key is a shape
+a behavioural engine may score, so it is listed here rather than left to be
+discovered. **Installing is optional**; see [The installer](#the-installer).
+
 ---
 
 ## What it contacts, and nothing else
@@ -93,13 +100,54 @@ Per-user only, under `%USERPROFILE%\.panopto-scheduler\`:
 Nowhere else. There is no machine-wide state to review: nothing under
 `Program Files`, nothing in the registry, and no entry added to startup.
 
+## The installer
+
+The zip carries `Install.cmd`, `install.ps1` and `uninstall.ps1` beside the
+executable. **Installing is optional.** Running `PanoptoScheduler.App.exe`
+straight from the unzipped folder is fully supported and is the path that writes
+nothing to the registry and creates no shortcuts at all.
+
+If the installer is run, it installs for the current user only and does exactly
+this — the whole list, nothing implied:
+
+| What | Where |
+|---|---|
+| The program files | `%LOCALAPPDATA%\Programs\Panopto Scheduler\` |
+| One Start Menu shortcut | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Panopto Scheduler.lnk` |
+| One Desktop shortcut | the folder Windows reports as the Desktop — `%USERPROFILE%\Desktop\Panopto Scheduler.lnk`, or under OneDrive where Desktop is redirected to it; skipped when run with `-NoDesktop` |
+| **One registry key** | `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\PanoptoScheduler` |
+
+The registry key is what lists the app in **Settings > Apps > Installed apps**.
+It is under **HKCU, never HKLM**; it holds exactly ten values — six display
+strings (`DisplayName`, `DisplayVersion`, `Publisher`, `InstallLocation`,
+`DisplayIcon`, `UninstallString`), `InstallDate`, `EstimatedSize` in KB, and the
+`NoModify` and `NoRepair` flags that hide Repair and Modify in Settings > Apps —
+and the uninstaller deletes it. Nothing the installer does needs
+administrator rights, and it refuses to run from an elevated prompt for that
+reason — a per-user install run as an administrator would install into the
+administrator's profile, not the user's, which is a silent and confusing
+outcome.
+
+There is deliberately **no packaged installer executable**. A self-extracting
+`.exe` — Inno Setup, NSIS, any of them — is the exact shape the endpoint
+protection on these workstations deletes on execution, and an `.msi` would
+require administrator rights and a WiX toolchain. Three readable script files
+are also the version of this that a reviewer can audit without a decompiler.
+
+Uninstalling removes the two shortcuts, that one key, and the program folder. It
+deliberately leaves `%USERPROFILE%\.panopto-scheduler\` in place — the saved
+sign-in, the booking templates and the logs — unless it is run with `-Purge`,
+because losing someone's templates as a side effect of removing a program would
+be a nasty surprise.
+
 ## What it does not do
 
 Each of these was checked for in the source and is absent:
 
 - no elevation, UAC prompt, or `runas`
 - no Windows service, driver, or scheduled task
-- no registry writes
+- no registry writes **by the application**. The installer writes one HKCU key,
+  and only if you choose to install — see [The installer](#the-installer).
 - no auto-update or self-modification
 - no downloaded code that is then executed
 - no filesystem scanning, enumeration, or exfiltration
@@ -128,15 +176,29 @@ reach is fine; a public download link is not.
 
 ## Allow-listing
 
-Allow-list by the executable's path in the unzipped folder:
+Allow-list by the executable's path, and **install first if you can**: it turns
+the rule from "wherever this person happened to unzip a folder" into a fixed
+path that is the same on every machine.
+
+```
+%LOCALAPPDATA%\Programs\Panopto Scheduler\PanoptoScheduler.App.exe
+```
+
+Running it in place remains supported, and then the path is wherever the zip was
+unpacked:
 
 ```
 <wherever it was unzipped>\PanoptoScheduler.App.exe
 ```
 
-A path rule is the better fit here, because the app is unpacked wherever the
-person likes — Desktop, Documents, a USB stick — and the folder is replaced
-wholesale when a new version arrives.
+A path rule is the better fit here either way, because the folder is replaced
+wholesale when a new version arrives, so a rule that pins the folder survives an
+upgrade where a hash rule does not.
+
+Allow-listing the installer as well is worth doing if people will use it:
+`Install.cmd`, `install.ps1` and `uninstall.ps1`, in the same folder. Allow-listing
+just the application leaves the portable path working and only the install step
+blocked.
 
 If a hash rule is required instead, hash the specific executable from the release
 being deployed, and re-do it per version. The version is shown in the app's title
