@@ -196,6 +196,79 @@ public class LegacyScheduleReaderTests
         Assert.Contains("not-a-date", result.Errors[0].Message);
     }
 
+    /// <summary>
+    /// The date format the real files in this repository actually use.
+    ///
+    /// <para><b>Measured, not imagined.</b> <c>panoptoSchedule.cfm.xml</c> spells
+    /// every one of its eighteen rows <c>d-MMM-yyyy</c> — <c>26-feb-2013</c> — and
+    /// <c>local_test.xml</c> carries <c>30-Oct-2013</c>. The parsers this replaced
+    /// handed the text to <c>DateTime.Parse</c> under the machine's culture, which
+    /// accepted both without anyone deciding to. An invariant parser that knew
+    /// only the numeric formats read neither file, and reported every row of both
+    /// as an error — so the import whose whole job is moving this data moved none
+    /// of it, and said so only in a per-row message nobody reads until later.</para>
+    ///
+    /// <para>Lower case in the first row and upper in the second, deliberately:
+    /// invariant month names match case-insensitively, and if that ever stops
+    /// being true, this is the test that says which half broke.</para>
+    /// </summary>
+    [Fact]
+    public void Reads_the_month_name_dates_the_real_schedule_files_use()
+    {
+        var result = LegacyScheduleReader.ReadCsv("""
+            A,JMHH240,26-feb-2013,10:00 AM,11:00 AM,,F,0
+            B,JMHH240,30-Oct-2013,10:00 AM,11:00 AM,,F,0
+            """);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal(new DateTime(2013, 2, 26), result.Rows[0].Start.Date);
+        Assert.Equal(new DateTime(2013, 10, 30), result.Rows[1].Start.Date);
+    }
+
+    /// <summary>
+    /// A spelled month settles the day/month order by itself, so such a row is
+    /// never offered the day-first/month-first guess and must not carry the
+    /// warning either — the option is set here precisely to show it changes
+    /// nothing. A warning on a date that reads exactly one way is how people
+    /// learn to ignore warnings.
+    /// </summary>
+    [Fact]
+    public void A_month_name_date_is_never_ambiguous()
+    {
+        var result = LegacyScheduleReader.ReadCsv(
+            "A,R,26-feb-2013,10:00 AM,11:00 AM,,F,0",
+            new ScheduleImportOptions { DayFirstDates = true });
+
+        Assert.Equal(new DateTime(2013, 2, 26), result.Rows[0].Start.Date);
+        Assert.DoesNotContain(result.Rows[0].Warnings, w => w.Contains("could be"));
+    }
+
+    /// <summary>
+    /// And by the path the real file takes: the date lives in
+    /// <c>&lt;RecordingDate&gt;</c>, not in a CSV column, so the XML reader has to
+    /// reach the same parser with it.
+    /// </summary>
+    [Fact]
+    public void Xml_reads_a_month_name_date()
+    {
+        var result = LegacyScheduleReader.ReadXml("""
+            <RecorderScheduleImport>
+              <RecorderSchedules>
+                <RecorderSchedule>
+                  <Class>STAT500401</Class>
+                  <Classroom>JMHH240</Classroom>
+                  <RecordingDate>30-Oct-2013</RecordingDate>
+                  <RecordingStartTime>10:30 AM</RecordingStartTime>
+                  <RecordingEndTime>12:00 PM</RecordingEndTime>
+                </RecorderSchedule>
+              </RecorderSchedules>
+            </RecorderScheduleImport>
+            """);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal(new DateTime(2013, 10, 30, 10, 30, 0), result.Rows[0].Start);
+    }
+
     // ---- Validation -----------------------------------------------------
 
     [Fact]

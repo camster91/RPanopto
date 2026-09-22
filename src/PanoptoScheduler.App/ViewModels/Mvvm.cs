@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using System.Windows.Input;
 using PanoptoScheduler.Core.Diagnostics;
 
@@ -39,6 +40,33 @@ public sealed class AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecute
         try
         {
             await execute();
+        }
+        catch (Exception ex)
+        {
+            // The last line of defence, and it has to be here. This method is
+            // async void, so anything that leaves it reaches
+            // DispatcherUnhandledException — and that handler closes the app,
+            // because there is no way to know how much state a stray exception
+            // left consistent. An operation that failed is not a reason to close
+            // the app, so the exception stops here instead.
+            //
+            // The operation's own handler is still the right place to say what
+            // happened, in the operation's own words, on the panel's own line —
+            // every view model has one, and several say "never let this escape"
+            // about exactly this. This catches only what got past one, which is
+            // why it says so on screen rather than logging quietly: an
+            // unexpected failure that the operator never sees is a failure
+            // nobody can report.
+            AppLog.Error("A command failed without handling its own error.", ex);
+
+            MessageBox.Show(
+                "That operation failed unexpectedly, so it did not run.\n\n"
+                + $"A log of what happened was written to:\n{AppLog.Directory}\n\n"
+                + "Please send that file on, along with what you were doing at the time.\n\n"
+                + $"({ex.GetType().Name}: {ex.Message})",
+                "Panopto Scheduler",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
         }
         finally
         {

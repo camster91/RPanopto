@@ -116,6 +116,31 @@ public static class ProblemText
     }
 
     /// <summary>
+    /// Whether a cancellation was the transport giving up rather than someone
+    /// asking it to stop.
+    ///
+    /// <para><b>The two arrive as the same exception and need opposite words.</b>
+    /// A cancellation is an instruction that was obeyed — nothing happened, and
+    /// nothing needs saying. A timeout is a write whose fate is unknown, and for
+    /// a write that is the whole message: it may already have landed on the
+    /// tenant, so "try again" is advice that can produce a second recording.</para>
+    ///
+    /// <para>The signal is the token, not the type. <c>HttpClient</c> reports its
+    /// own timeout by throwing with the <i>uncancelled</i> token it was given,
+    /// hanging a <see cref="TimeoutException"/> off the inner exception; a real
+    /// cancellation carries the token that was cancelled. Checking the inner
+    /// exception as well covers the case where a caller cancels its own token on
+    /// the way out of a timeout it has already caught.</para>
+    /// </summary>
+    public static bool IsTimeout(OperationCanceledException error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+
+        return error.InnerException is TimeoutException
+               || !error.CancellationToken.IsCancellationRequested;
+    }
+
+    /// <summary>
     /// The exception and everything it wraps, outermost first.
     ///
     /// <para>No cycle guard, deliberately. <c>Exception.InnerException</c> is

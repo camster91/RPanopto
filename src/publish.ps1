@@ -93,11 +93,47 @@ if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
 # app project alone, so the referenced Core project kept emitting a pdb and
 # shipped it -- a package contradicting the comment in the profile that says no
 # pdb travels. A global property reaches every project in the graph.
-& dotnet publish $appProj -c Release -p:PublishProfile=win-x64 -p:PublishDir="$publish\" -p:DebugType=none -p:DebugSymbols=false
+#
+# SelfContained, RuntimeIdentifier, PublishSingleFile and PublishReadyToRun are
+# passed for a further reason: they used to exist only in the profile, and the
+# profile is not in the repository. .gitignore excludes *.pubxml, so
+# Properties\PublishProfiles\win-x64.pubxml has never been committed -- and
+# MSBuild does not treat a missing profile as an error. It warns NETSDK1198 and
+# carries on, so on a fresh clone the command below published
+# framework-dependent, exited 0, and passed every other check in this script.
+# The zip then carried no runtime, onto workstations chosen precisely because
+# they do not have one. Passing the four here makes this script the single
+# source of truth and the profile unnecessary.
+#
+# PublishSingleFile=false is not a default to leave to chance: a self-extracting
+# single-file exe is the exact shape the endpoint protection on these machines
+# deletes on execution.
+& dotnet publish $appProj -c Release -p:SelfContained=true -p:RuntimeIdentifier=win-x64 -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:PublishDir="$publish\" -p:DebugType=none -p:DebugSymbols=false
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
 $exe = Join-Path $publish $exeName
 if (-not (Test-Path $exe)) { throw "Publish reported success but produced no $exeName." }
+
+# Asserted, not assumed, and this is the check the missing profile walked past:
+# with nothing but NETSDK1198 for it, a framework-dependent publish still has an
+# exe, still ships no pdb and still builds a zip, so every other check here
+# passes. System.Private.CoreLib.dll is the runtime itself -- present in a
+# self-contained publish, absent in a framework-dependent one -- so its presence
+# is what makes the package's central promise checkable.
+$coreLib = Join-Path $publish "System.Private.CoreLib.dll"
+if (-not (Test-Path $coreLib)) {
+    throw @"
+The publish is not self-contained.
+
+  $publish
+has no System.Private.CoreLib.dll, so the zip would install and then fail to
+start on every workstation -- they do not have the .NET 9 desktop runtime, and
+that is why this package carries its own.
+
+Check that -p:SelfContained=true is still reaching the command above, and that
+no Directory.Build.props or Directory.Build.targets has overridden it.
+"@
+}
 
 # Checked rather than trusted, because this is how the pdb shipped in the first
 # place: a symbol file triples the download and carries the build machine's

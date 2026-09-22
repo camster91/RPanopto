@@ -256,11 +256,21 @@ public class LegacyCookieTests
     }
 
     /// <summary>
-    /// Signing out has to drop the cookie: it authorises writes by itself, so a
-    /// cached one would let the next person to sign in act as the last.
+    /// Signing out has to drop the cookie from <b>both</b> places it is cached: it
+    /// authorises writes by itself, so a leftover copy would let the next person
+    /// to sign in act as the last — with their permissions and their name on the
+    /// record.
+    ///
+    /// <para><b>One call, and that is the point.</b> The provider holds a copy and
+    /// so does the client that actually sends it, so emptying either one alone
+    /// leaves the other to authenticate the next write. This drives the single
+    /// method <c>PanoptoConnection.SignOut</c> calls rather than emptying them by
+    /// hand. Emptying them by hand is what this test used to do — and it passed
+    /// while sign-out left the client's copy live, which it did, so it could not
+    /// fail on the defect it was written to catch.</para>
     /// </summary>
     [Fact]
-    public async Task A_signed_out_session_does_not_reuse_the_cookie()
+    public async Task Signing_out_drops_the_cookie_from_both_caches()
     {
         // Scripted with a second cookie, because signing out and back in is a
         // second exchange — without it the handler would replay its last step
@@ -274,9 +284,14 @@ public class LegacyCookieTests
 
         await ListAsync(soap);
         Assert.Equal(1, handler.CountOf("legacyLogin"));
+        Assert.Equal(".ASPXAUTH=first", soap.AuthCookie);
 
-        provider.Invalidate();
-        soap.AuthCookie = null;
+        soap.InvalidateAuthCookie();
+
+        // The client's own copy, checked directly: it is the one that goes out on
+        // the wire, and asserting only on the exchange count below would let a
+        // half-cleared cache hide behind a second exchange that happened anyway.
+        Assert.Null(soap.AuthCookie);
 
         await ListAsync(soap);
         Assert.Equal(2, handler.CountOf("legacyLogin"));

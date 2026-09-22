@@ -53,6 +53,29 @@ public static class LegacyScheduleReader
     private static readonly string[] UnambiguousDateFormats =
         ["yyyy-MM-dd", "yyyy/MM/dd", "yyyyMMdd"];
 
+    /// <summary>
+    /// Dates that spell the month out, e.g. <c>26-feb-2013</c>.
+    ///
+    /// <para><b>These are not a nicety — they are what the real files contain.</b>
+    /// <c>panoptoSchedule.cfm.xml</c> spells all eighteen of its rows
+    /// <c>d-MMM-yyyy</c>, and <c>local_test.xml</c> has <c>30-Oct-2013</c>, so
+    /// without this list the import reads neither. The parsers this replaced used
+    /// <c>DateTime.Parse</c> against the machine's culture, which accepted them
+    /// without anyone deciding to.</para>
+    ///
+    /// <para>They sit with the unambiguous formats because a spelled month cannot
+    /// be mistaken for a day, whichever order the two are written in — the
+    /// day-first/month-first question the numeric lists have to ask does not
+    /// arise. Invariant month names match case-insensitively, which is what lets
+    /// one list cover both <c>feb</c> and <c>Oct</c>.</para>
+    /// </summary>
+    private static readonly string[] MonthNameDateFormats =
+    [
+        "d-MMM-yyyy", "dd-MMM-yyyy", "d-MMM-yy",
+        "d MMM yyyy", "dd MMM yyyy", "d MMM yy",
+        "d/MMM/yyyy", "MMM d, yyyy", "MMM d, yy",
+    ];
+
     private static readonly string[] MonthFirstFormats = ["M/d/yyyy", "M/d/yy", "M-d-yyyy"];
 
     private static readonly string[] DayFirstFormats = ["d/M/yyyy", "d/M/yy", "d-M-yyyy"];
@@ -312,6 +335,11 @@ public static class LegacyScheduleReader
         text = text.Trim();
 
         if (TryExact(text, UnambiguousDateFormats, out date)) return true;
+
+        // Before the numeric families, and never alongside them: a month name is
+        // decisive on its own, so a row that spells one is never ambiguous and
+        // must not be offered the day-first/month-first warning.
+        if (TryExact(text, MonthNameDateFormats, out date)) return true;
 
         var monthFirst = TryExact(text, MonthFirstFormats, out var asMonthFirst);
         var dayFirstOk = TryExact(text, DayFirstFormats, out var asDayFirst);

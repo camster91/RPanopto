@@ -620,7 +620,20 @@ public partial class MainWindow : Window
 
         if (shift == TimeSpan.Zero && dayShift == 0) return;
 
-        await _viewModel.RescheduleAsync(block, shift, dayShift);
+        // Guarded because this is an async void event handler: an exception out
+        // of one reaches DispatcherUnhandledException, and that handler closes
+        // the app. RescheduleAsync reports its own failures — including the
+        // timeout it used to rethrow, which was how a drag that timed out ended
+        // the session — so anything arriving here is a failure it did not
+        // expect, and it is worth a log line rather than the whole session.
+        try
+        {
+            await _viewModel.RescheduleAsync(block, shift, dayShift);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("A drag could not be completed.", ex);
+        }
     }
 
     private (double Dx, double Dy) Offset(MouseEventArgs e)

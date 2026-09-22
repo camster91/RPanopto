@@ -147,8 +147,7 @@ public sealed class PanoptoSoapClient(
             // each of them, turning one request per row into three.
             _cookieRetried = true;
 
-            cookies.Invalidate();
-            AuthCookie = null;
+            InvalidateAuthCookie();
             await EnsureCookieAsync(ct).ConfigureAwait(false);
 
             // Not caught: if this one faults too, the caller gets the real
@@ -165,10 +164,30 @@ public sealed class PanoptoSoapClient(
             // The cookie is dropped anyway, so a stale one cannot make the same
             // failure repeat: the next call re-fetches and, if that was all it
             // was, succeeds. The failed write still went out exactly once.
-            cookies.Invalidate();
-            AuthCookie = null;
+            InvalidateAuthCookie();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Drops every copy of the legacy cookie this client can reach — the one it
+    /// holds and the provider's.
+    ///
+    /// <para><b>Both, always, and from one place.</b> There are two caches here
+    /// and emptying either one alone leaves the other live: the provider would
+    /// hand back the cookie it still has, and this client would send the copy it
+    /// already holds without asking the provider at all. Sign-out is the path
+    /// where the difference matters — the cookie authenticates writes on its own,
+    /// so a leftover copy lets the next person to sign in write as the person who
+    /// just signed out, with their permissions and their name on the record.</para>
+    ///
+    /// <para>Callers who only want the next call to re-fetch a rejected cookie
+    /// want this too: the alternative is a cache that disagrees with itself.</para>
+    /// </summary>
+    public void InvalidateAuthCookie()
+    {
+        cookies?.Invalidate();
+        AuthCookie = null;
     }
 
     /// <summary>

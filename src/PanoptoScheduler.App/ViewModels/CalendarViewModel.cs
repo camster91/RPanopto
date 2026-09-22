@@ -813,9 +813,21 @@ public sealed class CalendarViewModel : ObservableObject
             Status = EditNote;
             Detail = result.Message + trail;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex) when (ProblemText.IsTimeout(ex))
         {
-            throw;
+            // Not rethrown, and it used to be. The comment below is right that
+            // this must never escape — AsyncRelayCommand.Execute is async void,
+            // so an exception here ends the process rather than the operation —
+            // and rethrowing is what made that true in the worst way. A timeout
+            // is not the operator asking to stop, so it is not silently obeyed
+            // either: the write was sent, and Panopto does not say whether it
+            // landed.
+            //
+            // Said plainly rather than as "try again", because for this
+            // operation a second attempt is a second change to the tenant.
+            EditNote = "Panopto did not answer in time. The change may or may not "
+                     + "have gone through — reopen the recording to check before "
+                     + "pressing that again.";
         }
         catch (Exception ex)
         {
@@ -1609,9 +1621,27 @@ public sealed class CalendarViewModel : ObservableObject
             Rebuild();
             return true;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex) when (ProblemText.IsTimeout(ex))
         {
-            throw;
+            // Not rethrown, and it used to be — which is how a drag that timed
+            // out closed the app. The block was snapped back before the call and
+            // the local model was never updated, so the grid cannot be showing
+            // the answer: only a read can say whether the move landed. The read
+            // sets the status line itself, so the sentence goes on after it, the
+            // same order the successful path uses.
+            await LoadAsync(jumpToFirst: false).ConfigureAwait(true);
+
+            Status = "Panopto did not answer in time.";
+            Detail = $"{block.Title} may or may not have moved. The week has just been "
+                   + "re-read, so what is on screen is what Panopto holds.";
+
+            // False, and it is the honest value rather than the tidy one: every
+            // other path returning false is saying "the grid is showing the
+            // pre-drag position", and this one is not — it has just re-read the
+            // week, so the grid is showing whatever Panopto holds, which may be
+            // the moved session. What false does mean here, and the only thing
+            // this method can certify, is that it did not itself confirm the move.
+            return false;
         }
         catch (PanoptoSoapFaultException ex)
         {

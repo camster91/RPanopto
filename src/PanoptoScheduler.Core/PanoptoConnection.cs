@@ -157,10 +157,13 @@ public sealed class PanoptoConnection : IAsyncDisposable
     {
         Auth.SignOut();
 
-        // Dropped as well: the cookie authenticates writes on its own, so
-        // leaving it cached would let the next person to sign in write as the
-        // person who just signed out.
-        Cookies.Invalidate();
+        // Dropped as well, and both copies of it. The cookie authenticates
+        // writes on its own, so leaving it cached would let the next person to
+        // sign in write as the person who just signed out. It is cached twice —
+        // in the provider, and in the SOAP client that actually sends it — and
+        // invalidating either one alone leaves the other to authenticate the
+        // next write.
+        Soap.InvalidateAuthCookie();
 
         IsSignedIn = false;
     }

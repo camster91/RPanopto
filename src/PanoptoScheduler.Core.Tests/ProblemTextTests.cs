@@ -104,6 +104,100 @@ public class ProblemTextTests
         AssertNoLeak(summary);
     }
 
+    /// <summary>
+    /// The distinction the app keys its wording off, and the one it used to get
+    /// wrong in the direction that costs a duplicate recording.
+    ///
+    /// <para><b>Both arrive as <c>OperationCanceledException</c>, and they need
+    /// opposite advice.</b> A cancellation was an instruction that was obeyed:
+    /// nothing happened, so there is nothing to act on. A timeout is a write whose
+    /// fate is unknown — it may already have landed on the tenant — so "try again"
+    /// is the one thing an operator must not be told, because on a move or a
+    /// booking it produces a second one.</para>
+    ///
+    /// <para>The shape below is the one <c>HttpClient</c> actually produces when
+    /// its own <c>Timeout</c> elapses: the exception carries the <i>uncancelled</i>
+    /// token it was handed, with a <see cref="TimeoutException"/> hung off the
+    /// inner exception. Neither half is decoration — the token is what a genuine
+    /// cancellation would have cancelled, and the inner exception is what survives
+    /// a caller that cancels its own token on the way out.</para>
+    /// </summary>
+    [Fact]
+    public void An_http_timeout_is_a_timeout_not_a_cancellation()
+    {
+        var timedOut = new TaskCanceledException(
+            "The request was canceled due to the configured HttpClient.Timeout",
+            new TimeoutException("The operation has timed out."));
+
+        Assert.True(ProblemText.IsTimeout(timedOut));
+    }
+
+    /// <summary>
+    /// And the other half, which is the one that must never be read as a timeout:
+    /// someone asked for the work to stop. The token is the whole signal — it is
+    /// cancelled, and nothing is wrapped, so the call was obeyed and no write
+    /// went out.
+    /// </summary>
+    [Fact]
+    public void A_cancelled_token_is_a_cancellation_not_a_timeout()
+    {
+        using var source = new CancellationTokenSource();
+        source.Cancel();
+
+        var cancelled = new OperationCanceledException("Stopped.", source.Token);
+
+        Assert.False(ProblemText.IsTimeout(cancelled));
+    }
+
+    /// <summary>
+    /// The tie-break, spelled out because it is a decision rather than an
+    /// accident: when a token was cancelled <i>and</i> a timeout is wrapped
+    /// inside, the timeout wins.
+    ///
+    /// <para>A caller that catches its own timeout and then cancels the token on
+    /// the way out produces exactly this, and reading it as a calm cancellation
+    /// would tell the operator nothing happened when the write may well have
+    /// landed. Wrong in that direction loses a recording; wrong the other way
+    /// costs a sentence that says "check before retrying".</para>
+    /// </summary>
+    [Fact]
+    public void A_wrapped_timeout_outranks_a_cancelled_token()
+    {
+        using var source = new CancellationTokenSource();
+        source.Cancel();
+
+        var both = new OperationCanceledException(
+            "Cancelled after timing out.", new TimeoutException("The operation has timed out."), source.Token);
+
+        Assert.True(ProblemText.IsTimeout(both));
+    }
+
+    /// <summary>
+    /// The other signal, on its own: no inner exception at all, and a token
+    /// nobody cancelled.
+    ///
+    /// <para>This is the case the token half of the check exists for. If the
+    /// answer cannot have come from a cancellation request — there was no request;
+    /// the token is still live — then it did not come from one, and the only thing
+    /// left that cancels a request is the transport giving up. Reading this as a
+    /// calm cancellation is how a write that timed out gets reported as "nothing
+    /// happened".</para>
+    /// </summary>
+    [Fact]
+    public void An_uncancelled_token_alone_is_enough()
+    {
+        var unexplained = new OperationCanceledException(
+            "The operation was canceled.", CancellationToken.None);
+
+        Assert.True(ProblemText.IsTimeout(unexplained));
+    }
+
+    [Fact]
+    public void Nothing_is_not_a_timeout()
+    {
+        Assert.Throws<ArgumentNullException>(() => ProblemText.IsTimeout(null!));
+    }
+
     [Fact]
     public void AnUnknownFailureAdmitsItAndPointsAtTheLog()
     {

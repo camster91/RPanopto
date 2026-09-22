@@ -134,7 +134,7 @@ last term's dates would generate a term of bookings in the past.
 ```
 
 One file per day, kept for a month. It opens with the exact build
-(`1.3.0+<commit>`), the tenant, and the time zone; after that it records what the
+(`1.3.1+<commit>`), the tenant, and the time zone; after that it records what the
 app did and any error in full.
 
 Paste that path into the address bar of any Explorer window — or into the Run
@@ -192,6 +192,31 @@ Readable text is also the version of this that IT can audit.
 **`src\dist\win-x64\` is not a package and must not be shipped from.** It is the
 publish output of the last build on your machine; `publish.ps1` rebuilds it and
 refuses to zip it if a `.pdb` has appeared. Always ship the zip.
+
+### Cutting a release
+
+1. Bump `<Version>` in `src\PanoptoScheduler.App\PanoptoScheduler.App.csproj`.
+   That one string is the package name, the title bar and the log line; the two
+   lines under it are not bumped with it.
+2. Run `src\publish.ps1` and let it finish without throwing. It asserts the
+   publish is self-contained and pdb-free before it zips, so a run that completes
+   **is** the check that the result will start on a machine with no .NET runtime.
+3. Tag it on the commit you shipped, and release:
+
+   ```powershell
+   git tag v1.3.1
+   git push camster91 modern-app --tags
+   gh release create v1.3.1 --repo camster91/panopto-scheduler `
+       --title v1.3.1 --notes "<what changed>"
+   ```
+
+Release notes are where a version's changes go, not this file.
+
+**Do not attach the zip to a release.** It carries `defaults.json`, and so the
+shared OAuth client secret; an asset on a release is downloadable by everyone who
+can see the repository, and stays downloadable if the repository is ever made
+public or forked. The zip travels to the team directly. Anything that would make
+a release asset acceptable has to come with rotating the secret, not after it.
 
 ### Changing the tenant, or the client secret
 
