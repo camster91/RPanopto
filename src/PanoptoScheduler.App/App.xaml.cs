@@ -14,6 +14,12 @@ public partial class App : Application
     private PanoptoConnection? _panopto;
 
     /// <summary>
+    /// Held for the life of the process so a second copy cannot start. Never
+    /// released by hand — see <see cref="SingleInstance.TryClaim"/>.
+    /// </summary>
+    private Mutex? _instanceLock;
+
+    /// <summary>
     /// The build, as stamped by the csproj.
     ///
     /// <para>Two forms, because they answer different questions. This one is for
@@ -60,6 +66,40 @@ public partial class App : Application
         AppLog.Info($"Panopto Scheduler {FullVersion} starting.");
 
         HookCrashHandlers();
+
+        // Before anything is read or any window is built, so a second copy costs
+        // nothing and asks for nothing. See SingleInstance for what two copies
+        // would actually collide over.
+        if (!SingleInstance.TryClaim(out _instanceLock))
+        {
+            AppLog.Info("Another copy is already running; this one is exiting.");
+
+            // A self-test is run from a script and has nobody to click OK, so it
+            // says so on the console and exits instead of waiting on a dialog.
+            // That distinction matters here: the self-test windows are
+            // interactive and never close themselves, so a fixture left open
+            // from an earlier run is the ordinary way to reach this branch.
+            var selfTest = e.Args.Any(a => a.StartsWith("--self-test", StringComparison.OrdinalIgnoreCase));
+            if (selfTest)
+            {
+                Console.WriteLine("=== ALREADY RUNNING: close the open copy and try again ===");
+            }
+            else
+            {
+                MessageBox.Show(
+                    "Panopto Scheduler is already open.\n\n"
+                    + "It may be behind this window, or minimised on the taskbar. Only one "
+                    + "copy can run at a time: two would share the same saved sign-in and "
+                    + "the same log file, and would split the request budget Panopto allows "
+                    + "between them.",
+                    "Panopto Scheduler",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+
+            Shutdown();
+            return;
+        }
 
 #if DEBUG
         // A binding that does not resolve is this app's quietest failure: WPF
