@@ -1,8 +1,9 @@
 <Window x:Class="PanoptoScheduler.App.BulkWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Bulk actions" Height="720" Width="1080"
+        Title="Bulk actions — Panopto Scheduler" Height="720" Width="1080"
         MinHeight="420" MinWidth="760"
+        Icon="pack://application:,,,/Assets/PanoptoScheduler.ico"
         Background="{StaticResource WindowBg}" FontFamily="Segoe UI" FontSize="13"
         WindowStartupLocation="CenterOwner">
 

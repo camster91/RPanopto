@@ -1,9 +1,17 @@
+<!-- The sizes here are what this window wants on a desktop with room to spare,
+     and they are what the designer shows. They are not necessarily what it opens
+     at: the constructor fits them to the work area, because every size in WPF is
+     scaled by the display's DPI and at 150% these numbers describe a window
+     larger than a 1920x1080 screen. Change them here and the fit follows, since
+     it reads them off the window rather than repeating them. -->
 <Window x:Class="PanoptoScheduler.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:PanoptoScheduler.App.ViewModels"
         Title="Panopto Scheduler" Height="840" Width="1420"
         MinWidth="900" MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Icon="pack://application:,,,/Assets/PanoptoScheduler.ico"
         Background="{StaticResource WindowBg}" FontFamily="Segoe UI" FontSize="13">
 
     <!-- Escape drops the ticks. There was no keyboard binding anywhere in the

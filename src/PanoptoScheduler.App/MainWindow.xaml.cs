@@ -44,6 +44,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        ApplyFitToScreen();
+
         _panopto = panopto;
         _viewModel = new CalendarViewModel(panopto);
         DataContext = _viewModel;
@@ -786,6 +788,44 @@ public partial class MainWindow : Window
                 "Could not reach the clipboard.",
                 $"Something else is holding the clipboard. Try again. {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Opens the window the size the desktop it lands on can actually hold, and
+    /// lets it be shrunk to fit if it still cannot.
+    ///
+    /// <para>The sizes in the XAML are the ones this window wants on a desktop
+    /// with room to spare. Every size in WPF is scaled by the display's DPI, so
+    /// on a 1920x1080 laptop at 150% those numbers described a window wider and
+    /// taller than the screen, and at 200% the declared minimum was taller than
+    /// the desktop — a window that could not be made to fit whatever the user
+    /// did. The arithmetic is in <see cref="WindowFit"/> so it can be tested;
+    /// this only applies the answer.</para>
+    ///
+    /// <para><b>The order matters.</b> WPF coerces a window up to its minimum,
+    /// so a window set to 472 units tall with a minimum still at 560 comes back
+    /// at 560 — the original defect with an extra step. The minimums go first
+    /// and the size second.</para>
+    ///
+    /// <para>The work area is read once, at construction. Moving the window to a
+    /// differently scaled monitor afterwards is handled by the per-monitor DPI
+    /// manifest (app.manifest) and the calendar's own re-fit on SizeChanged;
+    /// deliberately no <c>DpiChanged</c> handler is added, because re-fitting a
+    /// window the user has just sized by hand is a worse behaviour than leaving
+    /// it where they put it.</para>
+    /// </summary>
+    private void ApplyFitToScreen()
+    {
+        // Already in device-independent units, which is the unit these
+        // properties are in. Scaling it again would double-apply the DPI.
+        var work = SystemParameters.WorkArea;
+
+        var fit = WindowFit.Fit(work.Width, work.Height, Width, Height, MinWidth, MinHeight);
+
+        MinWidth = fit.MinWidth;
+        MinHeight = fit.MinHeight;
+        Width = fit.Width;
+        Height = fit.Height;
     }
 
     /// <summary>

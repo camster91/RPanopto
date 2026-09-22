@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+
+  <!--
+    Why this file exists.
+
+    Without an application manifest, Windows runs the process as *system* DPI
+    aware: it is told the display's scaling once, at startup, and everything
+    drawn afterwards is scaled by the compositor as a bitmap. The result is a
+    blurry UI on any display that is not at 100%, and a window that is wrong the
+    moment it is dragged onto a second monitor with a different scale factor -
+    Windows will not re-render it at the new DPI because the process never said
+    it could handle that.
+
+    PerMonitorV2 is the mode that fixes both: the process is notified when the
+    DPI of the window changes, and WPF re-renders at the new scale rather than
+    stretching. The two dpiAware entries below it are the fallbacks for Windows
+    versions that do not know PerMonitorV2 - Windows 8.1 and Windows 8 - so the
+    app is per-monitor aware on those and system aware on anything older.
+
+    Nothing else is declared here on purpose:
+      * No requestedExecutionLevel. The default is asInvoker, which is what this
+        app needs - it must never prompt for elevation, and saying so explicitly
+        invites the question of why it was mentioned.
+      * No supportedOS list. The app targets Windows 10 and later through its
+        target framework, and getting that list wrong changes version-checking
+        behaviour in ways that are hard to notice.
+  -->
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
+
+</assembly>

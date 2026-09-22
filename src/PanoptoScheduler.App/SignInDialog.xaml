@@ -4,6 +4,7 @@
         Title="Panopto Scheduler — sign in" Height="380" Width="540"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False"
+        Icon="pack://application:,,,/Assets/PanoptoScheduler.ico"
         Background="{StaticResource WindowBg}" FontFamily="Segoe UI" FontSize="13">
 
     <!-- No Window.Resources: BoolToVisible and the dialog button style are two of
