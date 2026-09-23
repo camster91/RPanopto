@@ -81,6 +81,16 @@ public sealed class BulkEditViewModel : ObservableObject
     private CancellationTokenSource? _cts;
 
     private string? _previewed;
+
+    /// <summary>
+    /// An input changed while a dry run was in flight — the window in which
+    /// <see cref="_previewed"/> is still null and OnInputChanged has nothing
+    /// to revoke. The apply closures read the live inputs, so a rename
+    /// previewed against one text can apply as another; this flag is what
+    /// stops the preview arming over a change it never saw.
+    /// </summary>
+    private bool _changedDuringRun;
+
     private int _progressDone;
     private int _progressTotal;
 
@@ -585,7 +595,12 @@ public sealed class BulkEditViewModel : ObservableObject
     {
         _deleteAcknowledged = false;
 
-        Set(ref _deleteConfirmation, "");
+        // Through the property, not Set(): the field's name is what PropertyChanged
+        // fires for, and calling Set from this method body makes CallerMemberName
+        // supply "ClearDeleteConfirmation" — an event for a property that does
+        // not exist, so the bound box kept showing the typed word beside a
+        // greyed button, the exact state this method's doc says cannot occur.
+        DeleteConfirmation = "";
         Raise(nameof(DeleteAcknowledged));
     }
 
@@ -605,6 +620,12 @@ public sealed class BulkEditViewModel : ObservableObject
     /// </summary>
     private void OnInputChanged()
     {
+        // Recorded even when there is nothing to revoke yet. During a first
+        // preview _previewed is still null and the early return below used to
+        // drop the change entirely; the dry-run completion then armed apply on
+        // a report that described the inputs as they were before it.
+        _changedDuringRun = true;
+
         if (_previewed is null && !_deleteAcknowledged) return;
 
         RevokePreview();
@@ -649,6 +670,12 @@ public sealed class BulkEditViewModel : ObservableObject
         using var cts = new CancellationTokenSource();
         _cts = cts;
 
+        // Cleared here, after the selection was captured above: any input
+        // change from this point on is a change the running preview is not
+        // seeing, and OnInputChanged records it so the dry-run completion can
+        // refuse to arm on it.
+        _changedDuringRun = false;
+
         try
         {
             var report = await run(targets, dryRun, progress, cts.Token);
@@ -657,23 +684,34 @@ public sealed class BulkEditViewModel : ObservableObject
 
             if (dryRun)
             {
-                // Armed only when the preview found something it could do. A
-                // preview in which every row was refused is information, not
-                // permission: the rename whose text matches, the retime of rows
-                // with no reported time, the delete of a set that has since been
+                // Armed only when the inputs sat still for the whole preview
+                // and the preview found something it could do. A preview in
+                // which every row was refused is information, not permission:
+                // the rename whose text matches, the retime of rows with no
+                // reported time, the delete of a set that has since been
                 // unticked. Arming apply there offers a button whose run would
-                // repeat the same refusals and write nothing — which reads as the
-                // app having failed rather than as there being nothing to do.
-                _previewed = report.Results.Any(r => r.Outcome != SessionEditOutcome.Failed)
+                // repeat the same refusals and write nothing — which reads as
+                // the app having failed rather than as there being nothing to
+                // do. And a change made mid-preview — dropped by OnInputChanged,
+                // which had nothing to revoke — arrives here as the flag, so
+                // apply is not armed on inputs the report never described.
+                _previewed = !_changedDuringRun
+                             && report.Results.Any(r => r.Outcome != SessionEditOutcome.Failed)
                     ? op
                     : null;
 
                 onPreviewed?.Invoke(report);
 
-                Status = $"{report.WouldApply} of {report.Results.Count} would be {done}.";
-                Detail = _previewed is null
-                    ? "Nothing here can be applied — see the results."
-                    : "Nothing was written. Applying this operation is now enabled.";
+                Status = _changedDuringRun
+                    ? "The inputs changed during the preview — preview again."
+                    : $"{report.WouldApply} of {report.Results.Count} would be {done}.";
+
+                Detail = _changedDuringRun
+                    ? "The apply closures read the live inputs, so applying now would"
+                      + " use text this preview never saw. Preview again."
+                    : _previewed is null
+                        ? "Nothing here can be applied — see the results."
+                        : "Nothing was written. Applying this operation is now enabled.";
             }
             else
             {

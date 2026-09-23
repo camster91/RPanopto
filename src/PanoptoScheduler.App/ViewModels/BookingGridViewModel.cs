@@ -275,6 +275,15 @@ public sealed class BookingGridViewModel : ObservableObject
     /// </summary>
     private CancellationTokenSource? _cts;
     private bool _previewed;
+
+    /// <summary>
+    /// A row or option changed while a preview was running — the window in
+    /// which <see cref="_previewed"/> is still false and Revoke has nothing to
+    /// revoke, so the change is recorded here instead and the dry-run
+    /// completion refuses to arm on it.
+    /// </summary>
+    private bool _changedDuringRun;
+
     private double _progress;
     private string _status = "Nothing to book yet.";
     private string _detail = "";
@@ -443,7 +452,12 @@ public sealed class BookingGridViewModel : ObservableObject
         Outcomes.Clear();
 
         // The rows the preview described are gone, so the preview is spent.
+        // Raised as well as set: the "Previewed" banner is bound to
+        // HasPreviewed, and without the raise it stayed drawn over an empty
+        // grid — the comment above said it disappeared, so the code was
+        // claiming something it did not do.
         _previewed = false;
+        Raise(nameof(HasPreviewed));
 
         Renumber();
         Raise(nameof(RowCount));
@@ -480,6 +494,15 @@ public sealed class BookingGridViewModel : ObservableObject
     /// </summary>
     private void Revoke()
     {
+        // Recorded even when there is no preview to revoke yet. During a dry
+        // run _previewed is still false — it is only set when the preview
+        // reports — so a row edit made mid-preview used to fall through this
+        // early return and vanish, and the preview then finished and armed
+        // Book for a grid its report never described. The flag is what carries
+        // the change to the moment the run ends; RunAsync clears it when it
+        // captures the rows, and arming checks it.
+        _changedDuringRun = true;
+
         if (!_previewed) return;
 
         _previewed = false;
@@ -563,6 +586,12 @@ public sealed class BookingGridViewModel : ObservableObject
         using var cts = new CancellationTokenSource();
         _cts = cts;
 
+        // Cleared here, after the rows above were captured: any change from
+        // this point on is a change to the grid the running preview is not
+        // seeing, and Revoke records it so the dry-run completion can refuse
+        // to arm on it.
+        _changedDuringRun = false;
+
         try
         {
             var report = await _panopto.BulkScheduling
@@ -571,11 +600,27 @@ public sealed class BookingGridViewModel : ObservableObject
 
             if (dryRun)
             {
-                _previewed = true;
+                // Armed only when the grid sat still for the whole preview. A
+                // row or option changed mid-preview is dropped by Revoke —
+                // there is no arm to spend yet on the first preview — so it
+                // arrives here as the flag below; arming unconditionally would
+                // hand Book a report that never described the rows it books.
+                _previewed = !_changedDuringRun;
+                Raise(nameof(HasPreviewed));
 
-                Status = $"{report.WouldSchedule} of {report.Outcomes.Count} would be booked.";
-                Detail = $"{report.Skipped} skipped, {report.Failed} failed."
-                       + " Nothing was written. Booking is now enabled.";
+                if (_changedDuringRun)
+                {
+                    Status = "The rows changed during the preview — preview again.";
+                    Detail = $"{report.WouldSchedule} of {report.Outcomes.Count} would have been"
+                           + " booked, but a change made while the preview was running is not in"
+                           + " that report, so it does not unlock booking.";
+                }
+                else
+                {
+                    Status = $"{report.WouldSchedule} of {report.Outcomes.Count} would be booked.";
+                    Detail = $"{report.Skipped} skipped, {report.Failed} failed."
+                           + " Nothing was written. Booking is now enabled.";
+                }
             }
             else
             {

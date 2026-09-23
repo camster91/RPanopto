@@ -20,10 +20,22 @@ internal static class FailureDialog
     /// <param name="title">The window title.</param>
     internal static void Show(string leadIn, Exception error, string title)
     {
+        // The log's own fate decides which sentence is true. Promising a
+        // written log while the writes are failing hands the operator a path
+        // to a file that does not exist and asks them to send it — while the
+        // one thing that would have said what went wrong is nowhere at all.
+        // Saying so plainly is the honest alternative, and it is still
+        // actionable: what they were doing is the other half of any report.
+        var logLines = AppLog.LastWriteFailed
+            ? "The log could not be written, so there is no file to send. The folder it\n"
+              + $"would have gone to is:\n{AppLog.Directory}\n\n"
+              + "Please describe what you were doing at the time instead."
+            : "A log of what happened was written to:\n"
+              + $"{AppLog.Directory}\n\n"
+              + "Please send that file on, along with what you were doing at the time.";
+
         MessageBox.Show(
-            $"{leadIn}\n\n"
-            + $"A log of what happened was written to:\n{AppLog.Directory}\n\n"
-            + "Please send that file on, along with what you were doing at the time.\n\n"
+            $"{leadIn}\n\n{logLines}\n\n"
             + $"({error.GetType().Name}: {error.Message})",
             title,
             MessageBoxButton.OK,

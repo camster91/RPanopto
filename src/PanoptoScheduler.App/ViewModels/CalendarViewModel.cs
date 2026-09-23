@@ -207,6 +207,14 @@ public sealed class CalendarViewModel : ObservableObject
     /// </summary>
     private bool _roomsComplete = true;
 
+    /// <summary>
+    /// Whether the last session read reached the end of the tenant's set. A
+    /// half-read week draws exactly like a quiet one, so the flag is what lets
+    /// the status line mark the count as partial — same reason
+    /// <see cref="_roomsComplete"/> exists for the room listing.
+    /// </summary>
+    private bool _sessionsComplete = true;
+
     /// <summary>How many recorders the last read returned, for the note's number.</summary>
     private int _roomsRead;
 
@@ -800,16 +808,24 @@ public sealed class CalendarViewModel : ObservableObject
                 return;
             }
 
-            EditNote = $"{did}.{trail}";
+            // Captured before the read, because the read re-seeds the panel and
+            // SeedEdits clears EditNote in both of its branches — reading the
+            // property after the reload would assign the empty string to the
+            // status line, reporting nothing at all about a write that
+            // happened, and wiping the note from the panel a moment after the
+            // operator's eye landed on it.
+            var note = $"{did}.{trail}";
 
             // The read comes first and the report second, because the read sets
             // the status line itself ("219 scheduled session(s)…") and would
             // otherwise overwrite what just happened with a count of the week.
             await ReloadSelectedAsync().ConfigureAwait(true);
 
+            EditNote = note;
+
             // Also on the status line, where every other write reports, so the
             // window's own account of itself does not go stale behind the panel's.
-            Status = EditNote;
+            Status = note;
             Detail = result.Message + trail;
         }
         catch (OperationCanceledException ex) when (ProblemText.IsTimeout(ex))
@@ -1524,6 +1540,9 @@ public sealed class CalendarViewModel : ObservableObject
         _panopto.SignOut();
 
         _sessions = [];
+        // Vacuously complete: nothing is shown, so there is no half-read set
+        // for the status line to warn about.
+        _sessionsComplete = true;
         IsSignedIn = false;
         Rebuild();
 
@@ -1618,6 +1637,18 @@ public sealed class CalendarViewModel : ObservableObject
             block.Session.ApplyReschedule(start, block.Duration);
 
             Rebuild();
+
+            // A successful drag is one of the moments the panel's values stop
+            // being current — the same category as the writes SeedEdits exists
+            // for. Without this the read-only header shows the new time while
+            // EditDate/EditStart/EditEnd keep the pre-drag ones, and
+            // ApplyRetime has no "did it change" gate: one press of "Move to
+            // this time" writes the old time back and silently undoes the drag
+            // on the tenant. Only the dragged session's panel is reseeded, so
+            // nothing being typed in another one is disturbed.
+            if (SelectedBlock?.SessionId == id)
+                NotifyDetailsChanged();
+
             return true;
         }
         catch (OperationCanceledException ex) when (ProblemText.IsTimeout(ex))
@@ -1694,16 +1725,35 @@ public sealed class CalendarViewModel : ObservableObject
 
     private async Task ShiftWeekAsync(int days)
     {
+        // Rolled back on failure rather than left advanced: LoadAsync does not
+        // clear the old week's sessions when it cannot read new ones, so the
+        // grid keeps drawing the week it had — and a header reading "Sep 28 –
+        // Oct 4" over columns drawing Sep 21–27 is a lie about which week is on
+        // screen, with the details panel offering Rename/Move against blocks
+        // the header does not describe. `from`, not the shifted value, is what
+        // the screen is actually still holding.
+        var from = _weekStart;
         _weekStart = _weekStart.AddDays(days);
         Raise(nameof(WeekLabel));
-        await LoadAsync();
+
+        if (!await LoadAsync())
+        {
+            _weekStart = from;
+            Raise(nameof(WeekLabel));
+        }
     }
 
     private async Task GoToThisWeekAsync()
     {
+        var from = _weekStart;
         _weekStart = StartOfWeek(RoomToday());
         Raise(nameof(WeekLabel));
-        await LoadAsync();
+
+        if (!await LoadAsync())
+        {
+            _weekStart = from;
+            Raise(nameof(WeekLabel));
+        }
     }
 
     /// <summary>
@@ -1733,12 +1783,26 @@ public sealed class CalendarViewModel : ObservableObject
             Status = "Loading schedule…";
             // Every page. A single request returns a clamped slice, which draws
             // as a complete calendar with sessions quietly absent from it.
-            _sessions = await _panopto.Reads.GetAllSessionsAsync([1]);
+            // The completeness flag is consumed here because the drawn grid
+            // cannot say it on its own: a week that is missing rows looks
+            // exactly like a quiet one, and the status line is the only place
+            // that can tell the operator which one they are looking at.
+            var sessionsResult = await _panopto.Reads.GetAllSessionsAsync([1]);
+            _sessions = sessionsResult.Items;
+            _sessionsComplete = sessionsResult.Complete;
 
             // Before the repaint, so the first legend the operator sees is the
             // whole inventory rather than this week's rooms completing a beat
             // later. Once per sign-in — see _roomsLoaded.
-            if (!_roomsLoaded) await LoadRoomsAsync();
+            //
+            // The result is kept rather than dropped: a failed first read used
+            // to be swallowed exactly here — the success sentence below
+            // reported the week as usual, the legend drew week rooms as if
+            // that were the building, and the only trace was a log line. The
+            // Reload rooms button is still the retry; this is the report.
+            var roomsRead = _roomsLoaded;
+            if (!roomsRead)
+                roomsRead = await LoadRoomsAsync();
 
             // A session's real time lives in StartTime; ScheduledStartTime is
             // null on every scheduled row. PanoptoScheduler.Core handles that.
@@ -1759,7 +1823,13 @@ public sealed class CalendarViewModel : ObservableObject
             var rooms = RecorderPalette.Names(_sessions.Select(s => s.RemoteRecorderName)).Count;
 
             Status = $"{_sessions.Count} scheduled session(s) at {rooms} recorder(s)."
-                   + (IsRoomFiltered ? $" Filtered to {_roomFilter}." : "");
+                   + (IsRoomFiltered ? $" Filtered to {_roomFilter}." : "")
+                   + (_sessionsComplete
+                       ? ""
+                       : " The session listing stopped short — this count may be missing rows.")
+                   + (roomsRead
+                       ? ""
+                       : " The room list could not be read — the legend shows this week's rooms only; the Reload rooms button retries.");
 
             Detail = $"{shown} in view this week"
                    + (unplaced > 0 ? $" · {unplaced} with no usable time" : "");

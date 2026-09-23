@@ -107,10 +107,15 @@ internal static class SoapPaging
             all.AddRange(added);
 
             // Nothing new: either the set is exhausted, or Page is being ignored
-            // and this is the first page again. Both mean stop.
+            // and this is the first page again. Both mean stop — but only the
+            // first means complete. The total is the authority (it was read
+            // before the items for exactly this decision), so a repeat with
+            // more items still owed breaks the walk with Complete=false: the
+            // callers that act on a missing name must not be told "we read the
+            // whole set" by a server re-serving page 0.
             if (added.Count == 0)
             {
-                completed = true;
+                completed = total == 0 || all.Count >= total;
                 break;
             }
 

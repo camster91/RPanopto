@@ -567,7 +567,12 @@ public partial class MainWindow : Window
         // otherwise a click with a pixel of tremor would nudge the recording.
         // The same test decides the release, so the preview and the outcome
         // cannot disagree about which gesture this was.
-        if (CalendarLayout.IsClick(dx, dy)) return;
+        //
+        // The threshold is scaled to the fitted hour, not taken as a fixed
+        // pixel count: at small hour heights one snap is barely wider than
+        // ClickSlop, and the fixed figure would classify a deliberate small
+        // drag as a click.
+        if (CalendarLayout.IsClick(dx, dy, CalendarLayout.ClickSlopAt(_viewModel.HourHeight))) return;
 
         block.Top = _originTop + SnapToSlot(dy);
         block.Left = _originLeft + SnapToDay(dx);
@@ -586,8 +591,10 @@ public partial class MainWindow : Window
 
         // A press that did not travel is a request to read the recording rather
         // than to move it. Checked first, so a tremor during a click cannot also
-        // reschedule the thing it was opening.
-        if (CalendarLayout.IsClick(dx, dy))
+        // reschedule the thing it was opening. The threshold is the same
+        // scaled-to-the-grid figure the move handler uses, so the two handlers
+        // cannot disagree about which gesture this was.
+        if (CalendarLayout.IsClick(dx, dy, CalendarLayout.ClickSlopAt(_viewModel.HourHeight)))
         {
             _viewModel.SelectForDetails(block);
             return;
@@ -643,18 +650,33 @@ public partial class MainWindow : Window
     /// Rounds a vertical drag to the nearest slot, so the preview lands where the
     /// drop will actually put the recording rather than trailing the pointer.
     ///
-    /// <para>Instance rather than static because the hour is now fitted to the
+    /// <para>Delegated to the tested rule rather than re-derived here: the drop
+    /// goes through <see cref="CalendarLayout.DragToShift"/>, and a preview that
+    /// re-implemented its arithmetic could disagree with it at exactly half a
+    /// slot — showing no movement while the drop moves one.</para>
+    ///
+    /// <para>Instance rather than static because the hour is fitted to the
     /// window: a static read of it would snap to whatever the last window size
     /// happened to be.</para>
     /// </summary>
     private double SnapToSlot(double dy)
-    {
-        var slot = _viewModel.HourHeight * CalendarLayout.DragSnap.TotalMinutes / 60.0;
-        return slot <= 0 ? dy : Math.Round(dy / slot) * slot;
-    }
+        => CalendarLayout.DragToShift(dy, _viewModel.HourHeight).TotalMinutes
+           / 60.0 * _viewModel.HourHeight;
 
+    /// <summary>
+    /// Rounds a horizontal drag to whole columns, so the preview lands where the
+    /// drop will actually put the recording.
+    ///
+    /// <para>Delegated to the tested rule for the same reason as
+    /// <see cref="SnapToSlot"/>, and here the two had actually drifted apart:
+    /// <see cref="CalendarLayout.DragToDayShift"/> rounds half a column of
+    /// travel away from zero — "half a column counts as a move" — while
+    /// <see cref="Math.Round"/>'s banker's default showed no movement at all,
+    /// so at exactly half a column the preview stood still and the drop moved
+    /// a day.</para>
+    /// </summary>
     private double SnapToDay(double dx)
-        => Math.Round(dx / _viewModel.ColumnPitch) * _viewModel.ColumnPitch;
+        => CalendarLayout.DragToDayShift(dx, _viewModel.ColumnPitch) * _viewModel.ColumnPitch;
 
     /// <summary>
     /// Refits the grid whenever the room the calendar is drawn in changes.

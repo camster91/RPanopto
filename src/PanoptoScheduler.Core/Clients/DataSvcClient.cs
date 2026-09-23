@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using PanoptoScheduler.Core.Auth;
+using PanoptoScheduler.Core.Diagnostics;
 using PanoptoScheduler.Core.Models;
 using PanoptoScheduler.Core.RateLimiting;
 
@@ -76,17 +77,30 @@ public sealed class DataSvcClient(
     /// change nothing. Two further guards — no new ids, and a page ceiling —
     /// keep a server that ignores <c>Page</c> from looping forever.</para>
     /// </summary>
-    public async Task<IReadOnlyList<PanoptoSession>> GetAllSessionsAsync(
+    /// <returns>
+    /// The sessions and whether the walk reached the end of the set. A caller
+    /// that ignores <see cref="PagedResult{T}.Complete"/> draws a half-read
+    /// week exactly as it draws a quiet one, and the conflict check books a
+    /// busy room as free — the one thing this type exists to prevent.
+    /// </returns>
+    public async Task<PagedResult<PanoptoSession>> GetAllSessionsAsync(
         int[]? status = null,
         CancellationToken ct = default)
     {
         var all = new List<PanoptoSession>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var complete = false;
+        var reportedTotal = 0;
 
         for (var page = 0; page < MaxPages; page++)
         {
             var (results, total) = await GetSessionsPageAsync(status, MaxPageSize, page, ct)
                 .ConfigureAwait(false);
+
+            // MaxValue is the "server did not say" sentinel from the page
+            // read; ReportedTotal keeps 0 for that, so a message reads "of an
+            // unknown number" rather than "of 2147483647".
+            if (total != int.MaxValue) reportedTotal = total;
 
             var added = results
                 .Where(s => s.SessionID is null || seen.Add(s.SessionID))
@@ -94,12 +108,36 @@ public sealed class DataSvcClient(
 
             all.AddRange(added);
 
-            // The server's count is the authority. A page that adds nothing new
-            // means either the set is exhausted or Page is being ignored.
-            if (added.Count == 0 || all.Count >= total) break;
+            // Nothing new: either the set is exhausted or Page is being
+            // ignored. Both mean stop, but only the first means complete —
+            // the total is the authority, the same rule SoapPaging applies,
+            // and a caller told "complete" over a half-read set is the trap.
+            if (added.Count == 0)
+            {
+                complete = total == int.MaxValue || all.Count >= total;
+                break;
+            }
+
+            if (total != int.MaxValue && all.Count >= total)
+            {
+                complete = true;
+                break;
+            }
         }
 
-        return all;
+        // Logged because no caller is forced to consume Complete, and the two
+        // guards above can end the walk silently. The SOAP pager warns at its
+        // ceiling for the same reason; this path was the one read path with
+        // nothing to say when it stopped early.
+        if (!complete)
+        {
+            AppLog.Warn(
+                $"GetSessions: stopped after {MaxPages} pages holding {all.Count} scheduled session(s)"
+                + (reportedTotal > 0 ? $" of {reportedTotal}" : " with no total reported")
+                + ". The listing is incomplete — the week may be missing sessions.");
+        }
+
+        return new PagedResult<PanoptoSession>(all, complete, reportedTotal);
     }
 
     private async Task<(IReadOnlyList<PanoptoSession> Results, int TotalNumber)> GetSessionsPageAsync(

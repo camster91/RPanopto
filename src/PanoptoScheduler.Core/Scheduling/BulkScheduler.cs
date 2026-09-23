@@ -167,6 +167,12 @@ public sealed class BulkScheduler(
         // each one once keeps the request count proportional to the number of
         // distinct rooms, not the number of sessions.
         var folderCache = new Dictionary<string, FolderResolution>(StringComparer.OrdinalIgnoreCase);
+        // The recorder-default fallback is the same story for ids: a term's
+        // rows touch a handful of recorders many times over, and the lookup is
+        // a metered GetDefaultFolderForRecorder call per row without this.
+        // Cached per recorder id, so the dry run pays for the rooms it names
+        // once each, and the apply run pays the same again.
+        var defaultFolderCache = new Dictionary<Guid, Guid>();
         var defaultFolder = (await ResolveFolderAsync(
             folderCache, options.DefaultFolderName ?? string.Empty, ct).ConfigureAwait(false)).Folder;
 
@@ -177,7 +183,8 @@ public sealed class BulkScheduler(
             try
             {
                 Report(await ScheduleOneAsync(
-                    row, recorderList, folderCache, defaultFolder, options, ct).ConfigureAwait(false));
+                    row, recorderList, folderCache, defaultFolderCache, defaultFolder, options, ct)
+                    .ConfigureAwait(false));
             }
             catch (OperationCanceledException)
             {
@@ -204,6 +211,7 @@ public sealed class BulkScheduler(
         ScheduleImportRow row,
         PagedResult<RemoteRecorder> recorderList,
         Dictionary<string, FolderResolution> folderCache,
+        Dictionary<Guid, Guid> defaultFolderCache,
         PanoptoFolder? defaultFolder,
         BulkScheduleOptions options,
         CancellationToken ct)
@@ -260,7 +268,11 @@ public sealed class BulkScheduler(
             folder = defaultFolder;
             if (folder is null)
             {
-                var fallback = await recorders.GetDefaultFolderAsync(recorder.Id, ct).ConfigureAwait(false);
+                if (!defaultFolderCache.TryGetValue(recorder.Id, out var fallback))
+                {
+                    fallback = await recorders.GetDefaultFolderAsync(recorder.Id, ct).ConfigureAwait(false);
+                    defaultFolderCache[recorder.Id] = fallback;
+                }
 
                 if (fallback == Guid.Empty)
                 {
@@ -279,7 +291,13 @@ public sealed class BulkScheduler(
             // either way, and only the explanation changes.
             folderNote = unresolvedNote.Length > 0
                 ? $" Recorded to '{folder.Name}' because {unresolvedNote}."
-                : $" Recorded to '{folder.Name}' because '{row.FolderHint}' was not found.";
+                : string.IsNullOrWhiteSpace(row.FolderHint)
+                    // A blank hint never reached the resolver, so nothing was
+                    // searched and nothing was "not found" — the tenant is
+                    // fine; the row just says nothing about where it goes.
+                    // "'' was not found" claims a search that never happened.
+                    ? $" Recorded to '{folder.Name}' because the row names no folder."
+                    : $" Recorded to '{folder.Name}' because '{row.FolderHint}' was not found.";
         }
 
         if (options.DryRun)

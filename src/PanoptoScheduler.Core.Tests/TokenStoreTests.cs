@@ -241,6 +241,36 @@ public class AuthenticatorTokenCacheTests
         Assert.Equal("new-refresh", store.Load(Options().TenantUrl, "client-a")!.RefreshToken);
     }
 
+    /// <summary>
+    /// RFC 6749 §6 lets a refresh grant omit <c>refresh_token</c>. Reading that
+    /// as "no refresh token" would persist a set that cannot refresh, so the
+    /// next launch demands an interactive browser sign-in — with the
+    /// previously good token already overwritten on disk. The old refresh
+    /// token is carried forward instead.
+    /// </summary>
+    [Fact]
+    public async Task A_refresh_response_without_a_refresh_token_keeps_the_old_one()
+    {
+        var store = new FakeTokenStore();
+        store.Save(Options().TenantUrl, "client-a",
+            new TokenSet("stale-access", "old-refresh", DateTimeOffset.UtcNow.AddMinutes(-5)));
+
+        var http = ClientFor(
+            """{"access_token":"new-access","expires_in":3600}""",
+            out var handler);
+
+        await using var auth = new OAuthPkceAuthenticator(Options(), http, store);
+        Assert.True(auth.Restore());
+
+        var token = await auth.GetValidAccessTokenAsync();
+
+        Assert.Equal("new-access", token);
+        Assert.Equal(1, handler.Calls);
+        var persisted = store.Load(Options().TenantUrl, "client-a")!;
+        Assert.Equal("old-refresh", persisted.RefreshToken);
+        Assert.True(persisted.CanRefresh);
+    }
+
     [Fact]
     public async Task A_live_access_token_is_reused_without_calling_the_endpoint()
     {

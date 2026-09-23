@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using PanoptoScheduler.Core.Auth;
 using PanoptoScheduler.Core.Clients;
 using PanoptoScheduler.Core.Diagnostics;
 
@@ -28,6 +29,14 @@ public class ProblemTextTests
 
         Assert.Contains("already in use", summary, StringComparison.Ordinal);
         AssertNoLeak(summary);
+
+        // The fault's own Message is "Panopto rejected ScheduleRecording:
+        // …", so interpolating it into the summary would double the prefix and
+        // leak the internal operation name — both forbidden by the contract on
+        // Summarise. Before RawMessage existed, this test stayed green through
+        // exactly that, because it only checked the Panopto sentence.
+        Assert.Equal(1, summary.Split("Panopto rejected", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain("ScheduleRecording", summary, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -262,6 +271,53 @@ public class ProblemTextTests
         Assert.Contains("outermost", full, StringComparison.Ordinal);
         Assert.Contains("middle", full, StringComparison.Ordinal);
         Assert.Contains("innermost", full, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The body Panopto sent back with a failed request. Both clients
+    /// truncate it to 400 characters so it can be written down, and the
+    /// Message names only the endpoint and the status — so if the full text
+    /// does not carry the body, the one line in which the tenant says what it
+    /// objected to never reaches anyone. The summary stays without it: the
+    /// body is a fragment for whoever reads the log, not a sentence for the
+    /// status line.
+    /// </summary>
+    [Fact]
+    public void TheFullTextKeepsTheBodyPanoptoSentBack()
+    {
+        var refused = new PanoptoRequestException(
+            "SessionManagement/GetSessions",
+            HttpStatusCode.BadRequest,
+            """{"error":"The folder does not exist or you lack access"}""");
+
+        var full = AppLog.Full(refused);
+
+        Assert.Contains("The folder does not exist", full, StringComparison.Ordinal);
+
+        // And it stays in the record only: the summary of the same failure is
+        // the one-liner about the request being refused, with no body in it.
+        Assert.DoesNotContain("The folder does not exist",
+            ProblemText.Summarise(refused), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The sign-in window running out is the one timeout that is not Panopto's:
+    /// nothing had been asked of the server when it expired. Left as the bare
+    /// cancellation it used to propagate as, the summary said "Panopto did not
+    /// answer in time… the server busy" — advice to check a network that was
+    /// never consulted, while the browser tab they forgot stayed open.
+    /// </summary>
+    [Fact]
+    public void AnUnfinishedSignInNamesTheBrowserStepNotTheServer()
+    {
+        var expired = new SignInWindowExpiredException(TimeSpan.FromMinutes(5));
+
+        var summary = ProblemText.Summarise(expired);
+
+        Assert.Contains("browser", summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("5-minute", summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("did not answer in time", summary, StringComparison.Ordinal);
+        AssertNoLeak(summary);
     }
 
     [Fact]

@@ -144,6 +144,20 @@ public class WcfDateTimeConverterTests
         Assert.Null(Read("""{"Start":"not a date"}"""));
     }
 
+    /// <summary>
+    /// A value can be shaped right and still be unconvertible:
+    /// <c>long.MaxValue</c> is the classic .NET "unset" sentinel, it fits the
+    /// regex exactly, and the earlier implementation parsed it and threw out
+    /// of the read — taking every other session on the page with it, for a
+    /// value the contract here says is simply unread.
+    /// </summary>
+    [Fact]
+    public void An_in_shape_but_out_of_range_value_reads_as_null()
+    {
+        Assert.Null(Read("""{"Start":"/Date(9223372036854775807)/"}"""));
+        Assert.Null(Read("""{"Start":9223372036854775807}"""));
+    }
+
     [Fact]
     public void PanoptoSession_wires_the_converter_through_the_attribute()
     {

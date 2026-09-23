@@ -178,16 +178,68 @@ public class SoapClientTests
         Assert.Equal(HttpStatusCode.BadGateway, error.Status);
     }
 
-    [Fact]
-    public async Task Pauses_the_endpoint_when_rate_limited()
+    /// <summary>
+    /// Answers a scripted sequence of responses, so a test can have one call
+    /// fail and the next succeed. <see cref="RecordingHandler"/> answers one
+    /// canned response to every call, which cannot express "the retry is what
+    /// we are testing".
+    /// </summary>
+    internal sealed class SequencedHandler(params HttpResponseMessage[] responses) : HttpMessageHandler
     {
-        var handler = new RecordingHandler(HttpStatusCode.TooManyRequests, "");
+        private int _index;
+        public int Calls { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult(responses[Math.Min(_index++, responses.Length - 1)]);
+        }
+    }
+
+    /// <summary>
+    /// A 429 must pause the endpoint, not just throw. Deleting the
+    /// <c>PauseFor</c> call — or only the <c>Retry-After</c> parsing —
+    /// leaves the app hammering an endpoint the server has just metered for
+    /// the rest of a bulk run, and the earlier version of this test asserted
+    /// nothing but the throw, which the 429 path raises regardless of any
+    /// pause. So the second call is timed: the limiter's wait must hold it
+    /// back for at least the server's Retry-After before it goes out.
+    /// </summary>
+    [Fact]
+    public async Task A_429_pauses_the_endpoint_for_the_retry_after()
+    {
+        var retryAfter = TimeSpan.FromMilliseconds(400);
+        var handler = new SequencedHandler(
+            new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+            {
+                Headers = { RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(retryAfter) },
+            },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    Envelope.Replace("%s",
+                        """<ListRecordersResponse xmlns="http://tempuri.org/"><ListRecordersResult/></ListRecordersResponse>"""),
+                    Encoding.UTF8, "text/xml"),
+            });
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://rotman.ca.panopto.com") };
         var soap = new PanoptoSoapClient(http, new RateLimiterRegistry(), new StubAuthenticator());
 
+        var operation = SoapXml.Operation("ListRecorders");
+
         await Assert.ThrowsAsync<PanoptoRequestException>(() =>
             soap.InvokeAsync(PanoptoSoapClient.RemoteRecorderManagementPath,
-                "IRemoteRecorderManagement", SoapXml.Operation("ListRecorders")));
+                "IRemoteRecorderManagement", operation));
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        await soap.InvokeAsync(PanoptoSoapClient.RemoteRecorderManagementPath,
+            "IRemoteRecorderManagement", operation);
+        watch.Stop();
+
+        Assert.Equal(2, handler.Calls);
+        Assert.True(watch.Elapsed >= retryAfter,
+            $"the endpoint was not paused: the second call went out after {watch.Elapsed.TotalMilliseconds:0}ms"
+            + $" and the server asked for {retryAfter.TotalMilliseconds:0}ms.");
     }
 
     // ---- Results --------------------------------------------------------

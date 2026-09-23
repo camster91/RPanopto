@@ -40,6 +40,14 @@ public sealed class PanoptoSoapFaultException(string operation, string code, str
 {
     public string Operation { get; } = operation;
     public string Code { get; } = code;
+
+    /// <summary>
+    /// Panopto's own sentence, without the <c>Message</c> prefix this type
+    /// adds. <see cref="ProblemText"/> writes its own lead-in and must not
+    /// interpolate <c>Message</c>, which would double the prefix and leak the
+    /// internal operation name into a status line.
+    /// </summary>
+    public string RawMessage { get; } = message;
 }
 
 /// <summary>
@@ -86,7 +94,7 @@ public sealed class PanoptoSoapClient(
     /// Set once the stale-cookie retry has been spent, so it can never happen
     /// a second time however many calls go on to fail.
     /// </summary>
-    private bool _cookieRetried;
+    private int _cookieRetried;
     public const string RemoteRecorderManagementPath =
         "/Panopto/PublicAPI/4.2/RemoteRecorderManagement.svc";
 
@@ -126,46 +134,50 @@ public sealed class PanoptoSoapClient(
         CancellationToken ct = default,
         bool safeToRetry = false)
     {
-        await EnsureCookieAsync(ct).ConfigureAwait(false);
+        // The credential is resolved into a local before any await, so a fault
+        // in another flow cannot null the shared cache between the decision and
+        // the send — the rate limiter's WaitAsync below is a wide window, and a
+        // call that resumed to find AuthCookie empty would go out with the
+        // bearer, which these services answer with 200 and nothing: a success
+        // that means "you are nobody". A local either holds or it does not,
+        // whatever happens to the instance state meanwhile.
+        var cookie = await EnsureCookieAsync(ct).ConfigureAwait(false);
 
         try
         {
-            return await AttemptAsync(path, service, request, ct).ConfigureAwait(false);
+            return await AttemptAsync(path, service, request, cookie, ct).ConfigureAwait(false);
         }
-        catch (PanoptoSoapFaultException) when (cookies is not null && safeToRetry && !_cookieRetried)
+        catch (PanoptoSoapFaultException)
         {
-            // A stale cookie and a genuine refusal are indistinguishable from
-            // here — both arrive as a fault — so this re-fetches once and
-            // believes whatever comes back.
-            //
-            // Safe here and only here, because the caller has declared the call
-            // repeatable: for a read, asking twice costs one request and returns
-            // the same answer.
-            //
-            // Once per client, deliberately, and not once per cookie: a bulk run
-            // that faults on every row would otherwise fetch a fresh cookie for
-            // each of them, turning one request per row into three.
-            _cookieRetried = true;
+            // The retry is claimed atomically, not checked then set: two
+            // concurrent faults can both pass a plain read, and each would run
+            // its own legacyLogin — the amplification the flag exists to
+            // prevent. Once, per client, is the contract.
+            if (cookies is null || !safeToRetry || Interlocked.Exchange(ref _cookieRetried, 1) != 0)
+            {
+                // A write drops the cookie on its way out, so the next call
+                // re-fetches instead of repeating the same refusal. A read whose
+                // retry is spent deliberately does not: dropping it would make
+                // every later call in a faulting bulk run re-exchange — one
+                // legacyLogin per row, the amplification the flag above exists
+                // to prevent. The stale cookie faults again and the operator
+                // sees that, which is the honest report.
+                if (cookies is not null && !safeToRetry)
+                    InvalidateAuthCookie();
+                throw;
+            }
 
+            // The cookie this call sent is dropped before the retry fetches:
+            // a stale one is the one fault a fresh exchange can fix, and a
+            // cache that disagrees with the server must not outlive the call
+            // that discovered it.
             InvalidateAuthCookie();
-            await EnsureCookieAsync(ct).ConfigureAwait(false);
+
+            cookie = await EnsureCookieAsync(ct).ConfigureAwait(false);
 
             // Not caught: if this one faults too, the caller gets the real
             // reason rather than a retry loop's worth of noise.
-            return await AttemptAsync(path, service, request, ct).ConfigureAwait(false);
-        }
-        catch (PanoptoSoapFaultException) when (cookies is not null && !safeToRetry)
-        {
-            // A write is never re-sent, whatever the fault said. The booking may
-            // already have landed — Panopto can accept a call and then fault on
-            // the way back — so a resend risks a second recording with no way to
-            // tell which call made it.
-            //
-            // The cookie is dropped anyway, so a stale one cannot make the same
-            // failure repeat: the next call re-fetches and, if that was all it
-            // was, succeeds. The failed write still went out exactly once.
-            InvalidateAuthCookie();
-            throw;
+            return await AttemptAsync(path, service, request, cookie, ct).ConfigureAwait(false);
         }
     }
 
@@ -192,19 +204,24 @@ public sealed class PanoptoSoapClient(
 
     /// <summary>
     /// Exchanges the bearer for the legacy cookie, once, the first time a call
-    /// needs it. Without this the request goes out anonymous and Panopto answers
-    /// a 200 with nothing in it.
+    /// needs it, and returns the cookie this call is to send. Without this the
+    /// request goes out anonymous and Panopto answers a 200 with nothing in it.
     /// </summary>
-    private async Task EnsureCookieAsync(CancellationToken ct)
+    private async Task<string?> EnsureCookieAsync(CancellationToken ct)
     {
-        if (cookies is null || AuthCookie is { Length: > 0 }) return;
-        AuthCookie = await cookies.GetAsync(ct).ConfigureAwait(false);
+        if (cookies is null) return AuthCookie;
+        if (AuthCookie is { Length: > 0 } held) return held;
+
+        var fetched = await cookies.GetAsync(ct).ConfigureAwait(false);
+        AuthCookie = fetched;
+        return fetched;
     }
 
     private async Task<XElement?> AttemptAsync(
         string path,
         string service,
         XElement request,
+        string? cookie,
         CancellationToken ct)
     {
         var operation = request.Name.LocalName;
@@ -225,8 +242,8 @@ public sealed class PanoptoSoapClient(
         message.Headers.TryAddWithoutValidation(
             "SOAPAction", $"\"{PanoptoXml.Tns}{service}/{operation}\"");
 
-        if (AuthCookie is { Length: > 0 } cookie)
-            message.Headers.TryAddWithoutValidation("Cookie", cookie);
+        if (cookie is { Length: > 0 } value)
+            message.Headers.TryAddWithoutValidation("Cookie", value);
         else
             await auth.ApplyAsync(message, ct).ConfigureAwait(false);
 

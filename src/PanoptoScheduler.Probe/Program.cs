@@ -120,8 +120,25 @@ internal static class Program
 
         if (verifyWrite)
         {
+            // The rooms' zone is resolved here, from the same credentials the
+            // app reads, so the probe books through the configured zone rather
+            // than the compile-time default. With credentials naming
+            // Europe/London, a probe converting through the default would send
+            // the instant for 14:30 Toronto, read back 19:30, and print a
+            // MISMATCH about a write form that is correct.
+            TimeZoneInfo roomZone;
+            try
+            {
+                roomZone = credentials.ResolveTimeZone();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Could not resolve the rooms' time zone: {ex.Message}");
+                return 1;
+            }
+
             return await VerifyWriteAsync(
-                http, auth,
+                http, auth, roomZone,
                 Flag(args, "--recorder") ?? "",
                 Flag(args, "--folder"),
                 RequestedStart(Flag(args, "--at")),
@@ -672,6 +689,7 @@ internal static class Program
     private static async Task<int> VerifyWriteAsync(
         HttpClient http,
         IPanoptoAuthenticator auth,
+        TimeZoneInfo roomZone,
         string recorderName,
         string? folderHint,
         DateTime startsAt,
@@ -692,7 +710,9 @@ internal static class Program
         var soap = new PanoptoSoapClient(
             http, limiters, auth, new LegacyCookieProvider(http, limiters, auth));
 
-        var recorderClient = new RemoteRecorderClient(soap);
+        // The configured zone, not the compile-time default: this is the write
+        // path, and writes name the instant the room's wall clock points at.
+        var recorderClient = new RemoteRecorderClient(soap, roomZone);
         var sessionClient = new SessionManagementClient(soap);
         var dataSvc = new DataSvcClient(http, limiters, auth);
 
@@ -753,6 +773,7 @@ internal static class Program
 
         Console.WriteLine($"  Recorder : {recorder.Name}   {recorder.Id:D}");
         Console.WriteLine($"  Folder   : {folderLabel}   {folderId:D}");
+        Console.WriteLine($"  Zone     : {roomZone.Id}   (the rooms' wall clock, from credentials)");
         Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
             "  Booking  : {0:yyyy-MM-dd HH:mm} → {1:HH:mm}   {2} min, wall clock",
             startsAt, endsAt, minutes));
@@ -779,9 +800,13 @@ internal static class Program
         {
             Console.WriteLine($"  {recorder.Name} is not free across that slot:");
             foreach (var clash in clashes)
-                Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
-                    "    {0:yyyy-MM-dd HH:mm}  {1}",
-                    clash.EffectiveStart!.Value, clash.SessionName));
+            {
+                if (clash.EffectiveStart is { } at)
+                    Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                        "    {0:yyyy-MM-dd HH:mm}  {1}", at, clash.SessionName));
+                else
+                    Console.WriteLine($"    (no readable time)  {clash.SessionName}   ← cannot tell if it overlaps");
+            }
 
             Console.WriteLine();
             Console.WriteLine("  Choose an --at that misses those, or a different --recorder.");
@@ -791,21 +816,35 @@ internal static class Program
         Console.WriteLine($"  {recorder.Name} is free across that slot. Nothing has been written yet.");
         Console.WriteLine();
 
+        var title = $"ZZ probe, safe to delete ({startsAt:yyyy-MM-dd HH:mm})";
+
+        // Registered before the write and unregistered by the finally below:
+        // .NET terminates the process on Ctrl-C without unwinding the stack,
+        // so a finally never runs, and the read-back window the booking lives
+        // through is tens of seconds wide. OnCancelWhileBooked deletes the
+        // session before the process goes — the only code that still can.
+        Console.CancelKeyPress += OnCancelWhileBooked;
+
         ScheduledRecordingResult scheduled;
         try
         {
             scheduled = await recorderClient.ScheduleAsync(
-                $"ZZ probe, safe to delete ({startsAt:yyyy-MM-dd HH:mm})",
-                folderId, isBroadcast: false, startsAt, endsAt, [recorder.Id]);
+                title, folderId, isBroadcast: false, startsAt, endsAt, [recorder.Id]);
         }
         catch (Exception ex)
         {
             // A refusal is never retried, deliberately — a resent
-            // ScheduleRecording is a second recording, not a repeat of the
-            // first. So this is a clean answer, not a lost one.
-            Console.WriteLine($"  REFUSED — {ex.Message}");
+            // ScheduleRecording is a second recording, not a repeat of
+            // the first. But a fault is not always a refusal: the
+            // 60-second timeout turns a call the server did process into
+            // an exception here, and the booking may have landed. Saying
+            // "nothing was created" would be a guess, so the room is
+            // searched for the exact title and a match is deleted.
+            Console.WriteLine($"  FAILED — {ex.Message}");
             Console.WriteLine();
-            Console.WriteLine("  Nothing was created, and the call was not resent.");
+            await RemoveByTitleAsync(dataSvc, sessionClient, recorder.Name, title);
+            Console.WriteLine("  The call was not resent — a resent ScheduleRecording");
+            Console.WriteLine("  is a second recording, not a repeat of the first.");
             return 1;
         }
 
@@ -816,6 +855,13 @@ internal static class Program
         }
 
         var id = scheduled.SessionId;
+
+        // Stashed in statics the moment the id exists, not held in locals: the
+        // finally below is not the only way this run ends, and Ctrl-C takes
+        // the process without unwinding. OnCancelWhileBooked reads these.
+        _probeSessionId = id;
+        _probeCleanup = sessionClient;
+
         Console.WriteLine($"  Scheduled : {id:D}");
 
         if (scheduled.ConflictsExist)
@@ -953,7 +999,124 @@ internal static class Program
         }
         finally
         {
+            Console.CancelKeyPress -= OnCancelWhileBooked;
+            _probeSessionId = Guid.Empty;
+            _probeCleanup = null;
             await RemoveAsync(sessionClient, id);
+        }
+    }
+
+    /// <summary>
+    /// The live probe booking, from the moment the schedule call returns until
+    /// the finally removes it. Ctrl-C terminates the process without unwinding,
+    /// so the finally never runs; this static is how the handler below reaches
+    /// the id in time.
+    /// </summary>
+    private static Guid _probeSessionId;
+
+    /// <summary>The client the Ctrl-C handler deletes through, when a booking is live.</summary>
+    private static SessionManagementClient? _probeCleanup;
+
+    /// <summary>
+    /// Removes the live booking when the operator abandons the run with Ctrl-C.
+    ///
+    /// <para>Without this, an interrupt during the read-back window — tens of
+    /// seconds of tenant walks — leaves a <c>ZZ probe</c> session booked in a
+    /// real room, and the finally that would have deleted it never runs
+    /// because the process terminates without unwinding.</para>
+    ///
+    /// <para>Blocking on purpose: there is no continuation to return to once
+    /// the handler exits, the process goes anyway, and the transport is all
+    /// <c>ConfigureAwait(false)</c> with no synchronization context to deadlock.
+    /// <c>e.Cancel</c> is left false — the run is still being abandoned, only
+    /// cleanly.</para>
+    /// </summary>
+    private static void OnCancelWhileBooked(object? sender, ConsoleCancelEventArgs e)
+    {
+        if (_probeSessionId == Guid.Empty || _probeCleanup is not { } sessions) return;
+
+        try
+        {
+            sessions.DeleteSessionsAsync([_probeSessionId]).GetAwaiter().GetResult();
+            Console.WriteLine();
+            Console.WriteLine($"    Ctrl-C: removed {_probeSessionId:D} before exiting.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"    Ctrl-C: COULD NOT REMOVE {_probeSessionId:D} — {ex.Message}");
+            Console.WriteLine("    Delete it by hand in the Panopto web UI.");
+        }
+    }
+
+    /// <summary>
+    /// The recovery for a write whose fate is unknown: the call faulted or
+    /// timed out on the way back, so it may have landed, and the by-id cleanup
+    /// in the finally has no id to use. Searches the room's sessions for the
+    /// exact probe title and deletes what matches, so the probe leaves the
+    /// tenant as it found it whichever way the call went.
+    /// </summary>
+    private static async Task RemoveByTitleAsync(
+        DataSvcClient dataSvc, SessionManagementClient sessions, string recorderName, string title)
+    {
+        IReadOnlyList<PanoptoSession> all;
+        try
+        {
+            all = await dataSvc.GetAllSessionsAsync([1]);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Could not check whether the failed call landed: {ex.Message}");
+            Console.WriteLine($"  Look for a session titled \"{title}\" in {recorderName}");
+            Console.WriteLine("  and delete it by hand in the Panopto web UI.");
+            return;
+        }
+
+        var strays = all.Where(s =>
+                string.Equals(s.RemoteRecorderName, recorderName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(s.SessionName, title, StringComparison.Ordinal))
+            .ToList();
+
+        if (strays.Count == 0)
+        {
+            Console.WriteLine("  Nothing was created — no session carries the probe's title.");
+            return;
+        }
+
+        foreach (var stray in strays)
+        {
+            // Deleted by the DeliveryID first: it is the id ScheduleRecording
+            // returns and the id the ordinary cleanup deletes by, so it is the
+            // spelling this tenant is known to accept. The SessionID is the
+            // fallback for a row that reports no delivery id.
+            var ids = new[] { stray.DeliveryID, stray.SessionID }
+                .OfType<string>()
+                .Where(v => Guid.TryParse(v, out _))
+                .Select(Guid.Parse)
+                .Distinct()
+                .ToList();
+
+            var removed = false;
+            foreach (var strayId in ids)
+            {
+                try
+                {
+                    await sessions.DeleteSessionsAsync([strayId]);
+                    Console.WriteLine($"    removed {strayId:D} — the call had landed.");
+                    removed = true;
+                    break;
+                }
+                catch
+                {
+                    // Try the next id spelling before giving up on this row.
+                }
+            }
+
+            if (!removed)
+            {
+                Console.WriteLine($"    COULD NOT REMOVE \"{title}\" — delete it by hand");
+                Console.WriteLine("    in the Panopto web UI.");
+            }
         }
     }
 
@@ -968,6 +1131,13 @@ internal static class Program
     /// inside the window. Assuming a length for it would invent clashes, and the
     /// cost of that is a test that refuses to run where a real one would have
     /// been fine.</para>
+    ///
+    /// <para>A session whose start is unreadable is reported, never dropped:
+    /// whether it overlaps the window cannot be known, and a dropped row is how
+    /// an occupied room reads as free. The model's own rule — an invisible
+    /// session is worse than a flagged one — applies to the probe too, because
+    /// this check is the only thing standing between a verification run and a
+    /// second recording in a room that may be mid-lecture.</para>
     /// </summary>
     private static async Task<IReadOnlyList<PanoptoSession>> ClashesOnAsync(
         DataSvcClient dataSvc,
@@ -984,7 +1154,7 @@ internal static class Program
             if (!string.Equals(s.RemoteRecorderName, recorderName, StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            if (s.EffectiveStart is not { } at) return false;
+            if (s.EffectiveStart is not { } at) return true;
 
             // Strict on both sides where a length is known, so a session ending
             // exactly when this one starts is not reported as a clash.
@@ -1166,10 +1336,16 @@ internal static class Program
     /// <c>Data.svc</c> can lag a write by a moment.
     /// </summary>
     /// <remarks>
-    /// <para>Looks the row up by <c>SessionID</c> only. <see cref="ReadBackAsync"/>
-    /// also tries <c>DeliveryID</c>, which is right when asking whether a booking
-    /// exists and wrong here: the id already read back by <c>SessionID</c>, so
-    /// matching a different field would answer a question nobody asked.</para>
+    /// <para>Matches the row on <c>SessionID</c> and <c>DeliveryID</c> both,
+    /// the way <see cref="ReadBackAsync"/> does. The row is the same scratch
+    /// session whichever field hits — but one of the candidate ids this check
+    /// is called with <i>is</i> the DeliveryID, and a lookup keyed on
+    /// SessionID alone can never find the row that leg is about to write to.
+    /// The first version of this did exactly that, and the DeliveryID leg
+    /// always failed its read gate and printed "the row itself did not read
+    /// back" about a row read seconds earlier. The <b>write</b> stays keyed on
+    /// the candidate id alone; which id the write accepts is the question
+    /// this check exists to answer.</para>
     ///
     /// <para>Returns whether the <b>row</b> was found as well as what the field
     /// held, because those are different facts and collapsing them would let "the
@@ -1186,7 +1362,9 @@ internal static class Program
             var all = await dataSvc.GetAllSessionsAsync([1]);
 
             if (all.FirstOrDefault(s =>
-                    string.Equals(s.SessionID, wanted, StringComparison.OrdinalIgnoreCase)) is { } row)
+                    string.Equals(s.SessionID, wanted, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(s.DeliveryID, wanted, StringComparison.OrdinalIgnoreCase))
+                is { } row)
             {
                 return (true, row.Description);
             }
@@ -1465,6 +1643,24 @@ internal static class Program
             // a time on this machine and converting to UTC would have given, which
             // is what the old reading did.
             var wallClock = value;
+
+            // A stored wall clock can name an hour this machine's zone jumps
+            // over — 02:30 on a spring-forward date — and ConvertTimeToUtc
+            // throws a bare ArgumentException for it. RoomClock.ToWire guards
+            // the same call for the same reason; this printer is on the
+            // read-only default path and must not abort the run over one such
+            // row, so the comparison is skipped and said so.
+            if (TimeZoneInfo.Local.IsInvalidTime(value))
+            {
+                Console.WriteLine($"      wire       : {raw}");
+                Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                    "      wall clock : {0:yyyy-MM-dd HH:mm}   ← the room's time; matches the name",
+                    wallClock));
+                Console.WriteLine("      as instant : (that hour does not exist on this machine's clock)");
+                Console.WriteLine();
+                continue;
+            }
+
             var asInstant = TimeZoneInfo.ConvertTimeToUtc(value, TimeZoneInfo.Local);
 
             Console.WriteLine($"      wire       : {raw}");

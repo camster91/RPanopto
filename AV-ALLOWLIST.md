@@ -96,6 +96,7 @@ Per-user only, under `%USERPROFILE%\.panopto-scheduler\`:
 | `tokens.dat` | The cached sign-in, encrypted with **Windows DPAPI** — readable only by that Windows account, on that machine |
 | `templates.json` | Saved booking patterns. No credentials. |
 | `logs\app-<date>.log` | Plain-text log of what the app did and any error |
+| `logs\bulk-<date>.jsonl` | Audit trail of bulk changes: one JSON record per row of every bulk run, pruned on the same 30-day schedule as the log |
 
 Nowhere else. There is no machine-wide state to review: nothing under
 `Program Files`, nothing in the registry, and no entry added to startup.

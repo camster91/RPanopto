@@ -156,6 +156,15 @@ if (-not $NoDesktop) {
 
 $version = ''
 try { $version = (Get-Item -LiteralPath $installedExe).VersionInfo.ProductVersion } catch { }
+if (-not $version) {
+    # The catch used to leave this empty, which reached two places: Settings >
+    # Apps listed the app with a blank version, and the completion line below
+    # read "Panopto Scheduler  is installed" with a gap in it. The stamp is
+    # cosmetic, so the install stands - but it says what happened rather than
+    # silently showing nothing.
+    $version = 'unknown'
+    Write-Host '  (the executable carries no readable version stamp - Settings > Apps will show "unknown")' -ForegroundColor Yellow
+}
 if ($version) { $version = $version.Split('+')[0] }
 
 $sizeKb = 0

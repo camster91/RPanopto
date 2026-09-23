@@ -301,9 +301,19 @@ public partial class App : Application
     ///
     /// <para>Without this an unhandled exception on the UI thread kills the app
     /// with a Windows crash dialog and leaves nothing behind — the user sees it
-    /// vanish, and there is no artifact to send anyone. Every handler here ends
-    /// in the same place: a line in the log file, and for the fatal case a
-    /// message that names where the log is.</para>
+    /// vanish, and there is no artifact to send anyone. That handler ends the
+    /// way the user can see: a line in the log file, and a message that names
+    /// where the log is.</para>
+    ///
+    /// <para>The handler for exceptions on every other thread cannot promise the
+    /// message. It runs on whatever thread faulted, and once it returns the
+    /// process dies no matter what it does — the Windows crash dialog cannot be
+    /// suppressed from there — so it writes the log line and nothing else, and
+    /// a user who sees the app vanish under a foreign-thread fault has the log
+    /// to send rather than a sentence to read. That is a difference in what the
+    /// two handlers can do, not one to be papered over in the docs: this
+    /// comment used to claim a message for every fatal case, and the handler
+    /// below has never shown one.</para>
     /// </summary>
     private void HookCrashHandlers()
     {

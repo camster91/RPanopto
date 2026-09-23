@@ -37,12 +37,16 @@ public readonly record struct PaletteColour(byte R, byte G, byte B)
 /// nobody's idea of a pair. Twelve puts the wrap past a single week's plausible
 /// room count.</para>
 ///
-/// <para><b>The order of the list is the point.</b> Hues alternate around the
-/// wheel — roughly 180° between each entry and the next — so two rooms drawn
-/// side by side are never two neighbouring hues. The old list put a green at
-/// index 1 and a red at index 2, which is the one pair that red-green colour
-/// blindness cannot separate at all; those two are now as far apart as twelve
-/// entries allow.</para>
+/// <para><b>The order of the list is the point.</b> The hues are interleaved
+/// around the wheel rather than walked in sequence, so two rooms drawn side
+/// by side are never two neighbouring hues: in this order the smallest hue
+/// distance between one entry and the next — measuring the last back to the
+/// first, which is the pair that collides when the list wraps — is over
+/// 80 degrees, close to a quarter turn. And a reddish entry never sits next
+/// to a greenish one, which is the one pair red-green colour blindness
+/// cannot separate at all. Both properties are measured over the list as it
+/// stands by the tests, because the earlier version of this list claimed
+/// them in its doc while sitting a green one step before a red.</para>
 /// </summary>
 public static class RecorderPalette
 {
@@ -50,22 +54,26 @@ public static class RecorderPalette
     /// The stripes, in assignment order. Hues are interleaved rather than walked
     /// in sequence, so consecutive entries are far apart in hue — including the
     /// last back to the first, which is the pair that collides when the list
-    /// wraps.
+    /// wraps. The reddish and the greenish entries alternate with entries that
+    /// are neither, so a red is never handed out next to a green — the pair
+    /// red-green colour blindness cannot separate. The tests measure both over
+    /// the list as it stands rather than trusting this comment, which an
+    /// earlier order of this same list quietly contradicted.
     /// </summary>
     public static IReadOnlyList<PaletteColour> Colours { get; } =
     [
         new(0x2F, 0x6F, 0xED),   // blue
-        new(0xE0, 0x7A, 0x1E),   // orange
-        new(0x7A, 0x4F, 0xD1),   // violet
-        new(0x6E, 0x9B, 0x1F),   // yellow-green
-        new(0xC9, 0x40, 0x7F),   // magenta
-        new(0x10, 0x99, 0x6B),   // spring
-        new(0xCE, 0x3B, 0x32),   // red
-        new(0x0E, 0x8C, 0x9E),   // teal
-        new(0x4B, 0x3F, 0xA8),   // indigo
-        new(0x9A, 0x8B, 0x12),   // olive
-        new(0x9A, 0x3F, 0xC4),   // purple
         new(0x2E, 0x7D, 0x32),   // green
+        new(0x4B, 0x3F, 0xA8),   // indigo
+        new(0xCE, 0x3B, 0x32),   // red
+        new(0x7A, 0x4F, 0xD1),   // violet
+        new(0x10, 0x99, 0x6B),   // spring
+        new(0x9A, 0x8B, 0x12),   // olive
+        new(0xC9, 0x40, 0x7F),   // magenta
+        new(0x0E, 0x8C, 0x9E),   // teal
+        new(0xE0, 0x7A, 0x1E),   // orange
+        new(0x9A, 0x3F, 0xC4),   // purple
+        new(0x6E, 0x9B, 0x1F),   // yellow-green
     ];
 
     /// <summary>How many distinct recorders can be told apart before the list repeats.</summary>

@@ -72,22 +72,25 @@ purchase rather than a code change:
 1. Buy either an **OV** certificate (cheaper; the warning persists until the
    download builds reputation, which takes weeks) or an **EV** one (immediate
    reputation, higher cost, and issued on a hardware token).
-2. Sign the executable and the two scripts after publishing and before zipping.
-   With a certificate in the Windows certificate store, `signtool` from the
-   Windows SDK does it:
+2. Sign from inside the publish script, not after it. `publish.ps1` publishes
+   and zips in one run and deletes the publish folder at the start of the
+   next, so a signature added after the script exits signs files nobody will
+   ever zip — the exe in the shipped zip stays unsigned. Give the script the
+   certificate's SHA-1 thumbprint and it signs the executable and the two
+   scripts after staging them and before zipping, with `signtool` from the
+   Windows SDK:
 
    ```powershell
-   signtool sign /sha1 <certificate-thumbprint> /fd SHA256 `
-       /tr https://timestamp.digicert.com /td SHA256 `
-       src\dist\win-x64\PanoptoScheduler.App.exe
+   .\publish.ps1 -CertificateThumbprint <certificate-thumbprint>
    ```
 
-   The `/tr` timestamp matters: without it the signature stops being valid the
-   day the certificate expires, and every installed copy starts warning again.
-3. `install.ps1` and `uninstall.ps1` can be signed the same way. `Install.cmd`
-   cannot — batch files carry no signature — but SmartScreen does not prompt for
-   a `.cmd` the way it does for an unsigned `.exe`, so the executable is the file
-   that has to be signed.
+   The script adds an RFC 3161 timestamp with `/tr`; the timestamp matters:
+   without it the signature stops being valid the day the certificate expires,
+   and every installed copy starts warning again.
+3. `install.ps1` and `uninstall.ps1` are signed by the same run. `Install.cmd`
+   cannot be — batch files carry no signature — but SmartScreen does not prompt
+   for a `.cmd` the way it does for an unsigned `.exe`, so the executable is
+   the file that has to be signed.
 
 ---
 
@@ -120,6 +123,7 @@ Everything of yours is under `%USERPROFILE%\.panopto-scheduler\`:
 | `tokens.dat` | Your saved sign-in, encrypted with Windows DPAPI. Only your Windows account can read it. |
 | `templates.json` | Booking patterns you saved on the *Book recordings* tab. Yours alone; delete a file to start over. |
 | `logs\app-<date>.log` | What the app did, including any error. |
+| `logs\bulk-<date>.jsonl` | Audit trail of bulk changes: one JSON record per row of every bulk run. Kept for a month like the log. |
 
 A saved template keeps the pattern — rooms, weekdays, times, title format,
 presenter, folder — and **not the dates**. So it is the same next term as it was

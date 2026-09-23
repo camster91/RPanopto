@@ -170,6 +170,57 @@ public class RescheduleTests
         Assert.True(CalendarLayout.IsClick(20, 0, slop: 25));
     }
 
+    /// <summary>
+    /// The threshold has to scale with the hour, because the hour itself scales:
+    /// at the shortest hour the app draws — 36 pixels — one five-minute snap is
+    /// 3 pixels, and a fixed 4-pixel slop is wider than the smallest move the
+    /// grid can express. A deliberate drag of 3.5px would then have read as a
+    /// click and opened the details panel instead of moving the block.
+    ///
+    /// <para>Asserted against the drawn constants rather than a hand-picked
+    /// height, so the cap tracks whatever range the fitting is later given.</para>
+    /// </summary>
+    [Fact]
+    public void The_click_threshold_stays_under_half_a_snap_at_the_shortest_hour()
+    {
+        var slop = CalendarLayout.ClickSlopAt(CalendarMetrics.MinHourHeight);
+
+        // 36px an hour: half of one five-minute snap is 1.5px, and the fixed
+        // 4px figure had to shrink to fit under it.
+        Assert.Equal(1.5, slop, 3);
+        Assert.True(slop < CalendarLayout.ClickSlop);
+
+        // The misreading the cap exists to prevent: a 3.5px drag at this scale
+        // is a drag, not a click.
+        Assert.False(CalendarLayout.IsClick(0, 3.5, slop));
+    }
+
+    /// <summary>
+    /// At the tallest hour the cap is above the fixed slop and must not narrow
+    /// the gesture: a steady hand should not need to be steadier because the
+    /// window is large.
+    /// </summary>
+    [Fact]
+    public void The_click_threshold_is_not_narrowed_at_the_tallest_hour()
+    {
+        Assert.Equal(CalendarLayout.ClickSlop,
+            CalendarLayout.ClickSlopAt(CalendarMetrics.MaxHourHeight));
+    }
+
+    /// <summary>
+    /// Nonsense hour heights fall back to the fixed figure rather than to a
+    /// threshold that would invert the rule, for the same reason
+    /// <see cref="A_nonsense_threshold_falls_back_rather_than_inverting_the_rule"/>
+    /// guards the override.
+    /// </summary>
+    [Fact]
+    public void A_nonsense_hour_height_falls_back_rather_than_inverting_the_rule()
+    {
+        Assert.Equal(CalendarLayout.ClickSlop, CalendarLayout.ClickSlopAt(0));
+        Assert.Equal(CalendarLayout.ClickSlop, CalendarLayout.ClickSlopAt(-1));
+        Assert.Equal(CalendarLayout.ClickSlop, CalendarLayout.ClickSlopAt(double.NaN));
+    }
+
     // ---- Recording an accepted move -------------------------------------
 
     /// <summary>

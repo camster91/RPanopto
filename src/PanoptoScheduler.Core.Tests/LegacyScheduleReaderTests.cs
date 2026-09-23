@@ -197,6 +197,36 @@ public class LegacyScheduleReaderTests
     }
 
     /// <summary>
+    /// A quote left open eats the rest of the file: the reader cannot know
+    /// where the record ends, so everything after it becomes one giant field.
+    ///
+    /// <para><b>What this pins, and why it is not the obvious behaviour.</b>
+    /// Before the fix, the mangled record was emitted anyway — importing as
+    /// the rows before the quote, plus one broken row, with the rows after
+    /// the quote missing and nothing saying they ever existed. The honest
+    /// report names the line the quote opened on and keeps the rows that were
+    /// genuinely readable.</para>
+    /// </summary>
+    [Fact]
+    public void An_unterminated_quote_is_reported_with_its_line_not_swallowed()
+    {
+        var result = LegacyScheduleReader.ReadCsv("""
+            A,R,2021-01-26,10:00,11:00,,F,0
+            B,R,2021-01-26,10:00,11:00,,F,0
+            "C,R,2021-01-26,10:00,11:00,,F,0
+            D,R,2021-01-26,10:00,11:00,,F,0
+            """);
+
+        // The rows before the quote are real and still import.
+        Assert.Equal(2, result.Rows.Count);
+        Assert.Equal("A", result.Rows[0].Title);
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(3, error.Line);
+        Assert.Contains("quote", error.Message);
+    }
+
+    /// <summary>
     /// The date format the real files in this repository actually use.
     ///
     /// <para><b>Measured, not imagined.</b> <c>panoptoSchedule.cfm.xml</c> spells

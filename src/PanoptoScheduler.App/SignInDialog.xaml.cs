@@ -46,7 +46,13 @@ public partial class SignInDialog : Window
         {
             if (await _viewModel.SignInAsync())
             {
-                DialogResult = true;
+                // The window may have been closed while the browser flow ran —
+                // the X stays clickable during the await. DialogResult cannot be
+                // set on a closed window (it throws, from inside this async
+                // void handler, taking the process with it), and success does
+                // not need it: a window closed by hand already has its result,
+                // and a window still open needs true.
+                if (IsLoaded) DialogResult = true;
                 return;
             }
         }

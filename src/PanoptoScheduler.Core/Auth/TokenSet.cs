@@ -35,8 +35,20 @@ internal sealed class TokenResponse
     [JsonPropertyName("token_type")]
     public string? TokenType { get; set; }
 
-    public TokenSet ToTokenSet() => new(
+    /// <summary>
+    /// Builds the token set from a wire response.
+    ///
+    /// <para>RFC 6749 §6 lets a refresh grant omit <c>refresh_token</c>
+    /// entirely. Treating that as "no refresh token" would overwrite a good
+    /// cached session with a set that cannot refresh, so the next launch
+    /// would demand an interactive browser sign-in with the previously good
+    /// token already gone from disk. <paramref name="previousRefreshToken"/>
+    /// is carried forward when the response does not supply a new one;
+    /// there is nothing to carry on the authorization-code path, where the
+    /// response must carry its own.</para>
+    /// </summary>
+    public TokenSet ToTokenSet(string? previousRefreshToken = null) => new(
         AccessToken ?? throw new InvalidOperationException("Token response contained no access_token."),
-        RefreshToken,
+        RefreshToken ?? previousRefreshToken,
         DateTimeOffset.UtcNow.AddSeconds(ExpiresInSeconds));
 }

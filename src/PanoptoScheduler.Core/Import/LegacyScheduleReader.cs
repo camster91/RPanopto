@@ -115,7 +115,7 @@ public static class LegacyScheduleReader
         var rows = new List<ScheduleImportRow>();
         var errors = new List<ScheduleImportError>();
 
-        var records = CsvReader.Read(content, options.Delimiter);
+        var (records, unterminatedQuoteLine) = CsvReader.Read(content, options.Delimiter);
 
         for (var i = 0; i < records.Count; i++)
         {
@@ -139,6 +139,15 @@ public static class LegacyScheduleReader
 
             if (row is not null) rows.Add(row);
         }
+
+        // Reported after the loop, so it reads as the file-level problem it is:
+        // the rows before the quote were fine and are returned; every row from
+        // the quote onward is not recoverable from this file.
+        if (unterminatedQuoteLine is { } quoteLine)
+            errors.Add(new ScheduleImportError(quoteLine,
+                "A quoted field was left open here and never closed, so everything " +
+                "from this line to the end of the file was read as one field and has " +
+                "been dropped. Fix the missing quote and read the file again."));
 
         return new ScheduleImportResult(rows, errors);
     }
@@ -421,7 +430,14 @@ internal sealed record CsvRecord(int Line, IReadOnlyList<string> Fields);
 /// </summary>
 internal static class CsvReader
 {
-    public static IReadOnlyList<CsvRecord> Read(string text, char delimiter = ',')
+    /// <summary>
+    /// Reads the whole file. The second value is the line an unterminated quote
+    /// opened on, or null when every quote closed; when set, the record it
+    /// belonged to is absent from the list, because its one field held the
+    /// entire rest of the file.
+    /// </summary>
+    public static (IReadOnlyList<CsvRecord> Records, int? UnterminatedQuoteLine) Read(
+        string text, char delimiter = ',')
     {
         var records = new List<CsvRecord>();
         var fields = new List<string>();
@@ -485,13 +501,21 @@ internal static class CsvReader
             fieldStarted = true;
         }
 
+        // EOF inside a quoted field: everything after the opening quote has
+        // been accumulating into one giant field, and emitting that record
+        // would report "1 broken row" while quietly eating every row after the
+        // quote. Drop it and name the line instead, so the operator knows the
+        // file ends mid-quote and where to look.
+        if (inQuotes)
+            return (records, recordLine);
+
         if (field.Length > 0 || fields.Count > 0)
         {
             fields.Add(field.ToString());
             Add(records, fields, recordLine);
         }
 
-        return records;
+        return (records, null);
     }
 
     private static void Add(List<CsvRecord> records, List<string> fields, int line)

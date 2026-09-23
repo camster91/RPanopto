@@ -21,6 +21,13 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
     /// <summary>How long to wait for the user to finish in the browser.</summary>
     public static readonly TimeSpan AuthorizationTimeout = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// The window this instance actually waits for. The app takes the default;
+    /// a test shrinks it, because five real minutes is not a wait a suite can
+    /// afford and the expiry path has to be exercised as anything else is.
+    /// </summary>
+    internal TimeSpan AuthorizationWindow { get; init; } = AuthorizationTimeout;
+
     private readonly OAuthOptions _options;
     private readonly HttpClient _http;
     private readonly ITokenStore? _tokenStore;
@@ -96,8 +103,21 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
         if (AuthorizationUrlReady is not null)
             await AuthorizationUrlReady(url).ConfigureAwait(false);
 
-        var query = await listener.WaitForCallbackAsync(AuthorizationTimeout, ct)
-            .ConfigureAwait(false);
+        IReadOnlyDictionary<string, string> query;
+        try
+        {
+            query = await listener.WaitForCallbackAsync(AuthorizationWindow, state, ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The authorization window ran out with no redirect: the browser
+            // step was never finished. Translated, because the bare
+            // cancellation says "timed out", and a timeout summary points at
+            // Panopto's server and the network — neither of which had been
+            // asked anything yet. See SignInWindowExpiredException.
+            throw new SignInWindowExpiredException(AuthorizationWindow);
+        }
 
         if (query.TryGetValue("error", out var error))
         {
@@ -116,13 +136,16 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
         if (!query.TryGetValue("code", out var code) || string.IsNullOrWhiteSpace(code))
             throw new InvalidOperationException("The callback contained no authorization code.");
 
+        // Null on the carry slot: the authorization-code exchange issues the
+        // first refresh token, and the response has to bring one or there is
+        // nothing to carry forward from.
         _tokens = await ExchangeAsync(new Dictionary<string, string>
         {
             ["grant_type"] = "authorization_code",
             ["code"] = code,
             ["redirect_uri"] = _options.RedirectUri,
             ["code_verifier"] = verifier,
-        }, ct).ConfigureAwait(false);
+        }, null, ct).ConfigureAwait(false);
 
         Persist(_tokens);
     }
@@ -167,11 +190,17 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
 
             try
             {
+                // The previous refresh token rides along for RFC 6749 §6: a
+                // refresh grant may omit refresh_token, and dropping the old
+                // one then would persist a set that cannot refresh — the next
+                // launch would demand an interactive browser sign-in with the
+                // previously good token already overwritten on disk.
+                var previousRefreshToken = _tokens.RefreshToken;
                 _tokens = await ExchangeAsync(new Dictionary<string, string>
                 {
                     ["grant_type"] = "refresh_token",
-                    ["refresh_token"] = _tokens.RefreshToken!,
-                }, ct).ConfigureAwait(false);
+                    ["refresh_token"] = previousRefreshToken!,
+                }, previousRefreshToken, ct).ConfigureAwait(false);
             }
             catch (InvalidOperationException)
             {
@@ -249,9 +278,17 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
         return $"{_options.AuthorizeEndpoint}?{encoded}";
     }
 
+    /// <summary>
+    /// Exchanges form fields for a token set.
+    /// </summary>
+    /// <param name="carryRefreshToken">
+    /// The refresh token to keep when the response omits one — null on the
+    /// authorization-code path, where there is nothing to carry.
+    /// </param>
     private async Task<TokenSet> ExchangeAsync(
         Dictionary<string, string> fields,
-        CancellationToken ct)
+        string? carryRefreshToken = null,
+        CancellationToken ct = default)
     {
         fields["client_id"] = _options.ClientId;
         fields["client_secret"] = _options.ClientSecret;
@@ -274,12 +311,18 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("Token endpoint returned an empty response.");
 
-        return payload.ToTokenSet();
+        return payload.ToTokenSet(carryRefreshToken);
     }
 
     public ValueTask DisposeAsync()
     {
-        _gate.Dispose();
+        // The gate is deliberately not disposed. The one caller of this is the
+        // Exit handler, which runs while bulk work may be mid-refresh and
+        // holding the gate: Release() on a disposed semaphore throws
+        // ObjectDisposedException from a background task, and disposing does
+        // not complete the waiters parked on it. Nothing the gate holds is a
+        // resource the operating system needs returned — the process is
+        // ending — so an unhandled throw on the way out is all disposal buys.
         return ValueTask.CompletedTask;
     }
 }

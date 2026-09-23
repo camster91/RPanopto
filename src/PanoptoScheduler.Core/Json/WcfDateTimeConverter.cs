@@ -52,6 +52,18 @@ public sealed partial class WcfDateTimeConverter : JsonConverter<DateTime?>
     private static partial Regex WcfDate();
 
     /// <summary>
+    /// The milliseconds the conversion can name at all: the range
+    /// <see cref="DateTimeOffset"/> accepts. A value outside it is
+    /// unrecognised rather than fatal, because the contract here is that one
+    /// bad value becomes null and the rest of the page still reads — and
+    /// <c>/Date(9223372036854775807)/</c>, the classic .NET "unset" sentinel,
+    /// is exactly the in-shape, out-of-range value that a parse-first
+    /// implementation would abort the whole page over.
+    /// </summary>
+    private const long MinEpochMs = -62_135_596_800_000;
+    private const long MaxEpochMs = 253_402_300_799_999;
+
+    /// <summary>
     /// Parses the date shapes Panopto puts on the wire, into the wall clock they
     /// spell out.
     ///
@@ -83,7 +95,17 @@ public sealed partial class WcfDateTimeConverter : JsonConverter<DateTime?>
             return true;
         }
 
-        value = WallClockOf(long.Parse(match.Groups["ms"].Value, CultureInfo.InvariantCulture));
+        // Parsed, not assumed in range: the regex accepts any digit run, and
+        // long.Parse would throw out of a TryParse whose whole contract is
+        // "unrecognised becomes null, and the page keeps reading".
+        if (!long.TryParse(match.Groups["ms"].Value, NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var epochMs)
+            || epochMs is < MinEpochMs or > MaxEpochMs)
+        {
+            return false;
+        }
+
+        value = WallClockOf(epochMs);
         return true;
     }
 
@@ -109,8 +131,12 @@ public sealed partial class WcfDateTimeConverter : JsonConverter<DateTime?>
 
         // A bare number is the same value in the same units, so it reads the same
         // way rather than becoming an instant just because it arrived unquoted.
+        // The range check is the same one the string path applies: the reader
+        // hands back any long it parsed, and the conversion would throw on one
+        // outside the DateTimeOffset range instead of returning null.
         if (reader.TokenType == JsonTokenType.Number &&
-            reader.TryGetInt64(out var epochMs))
+            reader.TryGetInt64(out var epochMs) &&
+            epochMs is >= MinEpochMs and <= MaxEpochMs)
             return WallClockOf(epochMs);
 
         return null;

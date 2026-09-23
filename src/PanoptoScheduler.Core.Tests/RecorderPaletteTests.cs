@@ -102,19 +102,98 @@ public class RecorderPaletteTests
         Assert.Equal(RecorderPalette.Colours.Count, RecorderPalette.Colours.Distinct().Count());
     }
 
-    [Fact]
-    public void RedAndGreenAreNotNeighbours()
+    /// <summary>
+    /// The standard RGB-to-hue conversion, test-local on purpose: Core has no
+    /// colour type to borrow it from, and the palette's own doc once claimed an
+    /// interleave its list did not deliver, so the arithmetic is kept beside
+    /// the assertion that uses it.
+    /// </summary>
+    private static double Hue(PaletteColour colour)
     {
-        // The one pair red-green colour blindness cannot separate. They were
-        // adjacent in the old six-colour list.
-        var red = RecorderPalette.Colours[6];
-        var green = RecorderPalette.Colours[11];
+        var r = colour.R / 255.0;
+        var g = colour.G / 255.0;
+        var b = colour.B / 255.0;
 
-        Assert.True(red.R > red.G && red.R > red.B);
-        Assert.True(green.G > green.R && green.G > green.B);
-        Assert.True(
-            Math.Abs(6 - 11) > 1,
-            "red and green must not be handed out one after the other");
+        var max = Math.Max(r, Math.Max(g, b));
+        var min = Math.Min(r, Math.Min(g, b));
+        var delta = max - min;
+
+        if (delta == 0) return 0;
+
+        if (max == r) return 60 * (((g - b) / delta) % 6);
+        if (max == g) return 60 * (((b - r) / delta) + 2);
+        return 60 * (((r - g) / delta) + 4);
+    }
+
+    /// <summary>
+    /// The shorter angular distance between two hues, so 350° and 10° count
+    /// as neighbours the way they look.
+    /// </summary>
+    private static double WheelDistance(double a, double b)
+    {
+        var gap = Math.Abs(a - b);
+        return gap > 180 ? 360 - gap : gap;
+    }
+
+    [Fact]
+    public void ConsecutiveColoursAreFarApartOnTheWheelIncludingTheWrap()
+    {
+        // The interleave is the palette's documented design: two rooms drawn
+        // side by side must never be two neighbouring hues, and the pair that
+        // matters as much as any is the last entry back to the first, because
+        // that is the pair the thirteenth room collides with. The doc on this
+        // list once claimed "roughly 180°" while the real smallest gap was
+        // 59°, so this reads the list and measures.
+        var colours = RecorderPalette.Colours;
+        var minimum = double.MaxValue;
+
+        for (var i = 0; i < colours.Count; i++)
+        {
+            var gap = WheelDistance(Hue(colours[i]), Hue(colours[(i + 1) % colours.Count]));
+            minimum = Math.Min(minimum, gap);
+        }
+
+        Assert.True(minimum >= 80,
+            $"the closest consecutive hues are {minimum:0.#}° apart — a quarter turn is the promise");
+    }
+
+    [Fact]
+    public void NoGreenIsHandedOutNextToTheRed()
+    {
+        // The one pair red-green colour blindness cannot separate at all.
+        // "Red" and "green" are found by what the channels look like, not by
+        // index — the earlier version of this test hardcoded two indices and
+        // asserted the distance between the literals, which stayed green
+        // through any order the list shipped.
+        //
+        // The red test demands red clearly dominant over green (by a margin,
+        // not a hair) for two reasons: magenta is red-dominant but carries a
+        // strong blue channel, and blue is the one axis red-green colour
+        // blindness preserves — a magenta stripe next to a green one stays
+        // separable. And olive is red-dominant by a single count, which no
+        // eye reads as red; it is a dark yellow-green.
+        var colours = RecorderPalette.Colours;
+
+        var reds = Enumerable.Range(0, colours.Count)
+            .Where(i => colours[i].R > colours[i].G
+                        && colours[i].R > colours[i].B
+                        && colours[i].R - colours[i].G > 30)
+            .ToList();
+        var greens = Enumerable.Range(0, colours.Count)
+            .Where(i => colours[i].G > colours[i].R && colours[i].G > colours[i].B)
+            .ToList();
+
+        Assert.NotEmpty(reds);
+        Assert.NotEmpty(greens);
+
+        foreach (var red in reds)
+        {
+            foreach (var green in greens)
+            {
+                Assert.True(Math.Abs(red - green) > 1,
+                    $"a green (index {green}) sits next to the red (index {red})");
+            }
+        }
     }
 
     [Fact]

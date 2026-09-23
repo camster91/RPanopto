@@ -17,10 +17,20 @@ namespace PanoptoScheduler.Core.Auth;
 /// Bound to <see cref="IPAddress.Loopback"/> so the callback is never reachable
 /// from the network.
 /// </summary>
-public sealed class LoopbackListener(int port, string expectedPath) : IAsyncDisposable
+/// <param name="connectionDeadline">
+/// How long one connection gets to say something at all. A connection that
+/// sends no request line is closed and the wait continues, so one silent
+/// local connection cannot park the whole authorization window.
+/// </param>
+public sealed class LoopbackListener(int port, string expectedPath, TimeSpan? connectionDeadline = null)
+    : IAsyncDisposable
 {
     private readonly TcpListener _listener = new(IPAddress.Loopback, port);
+    private readonly TimeSpan _connectionDeadline = connectionDeadline ?? DefaultConnectionDeadline;
     private bool _started;
+
+    /// <summary>How long one connection gets to say something at all.</summary>
+    private static readonly TimeSpan DefaultConnectionDeadline = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Binds the callback port.
@@ -58,11 +68,25 @@ public sealed class LoopbackListener(int port, string expectedPath) : IAsyncDisp
     /// <summary>
     /// Waits for the redirect and returns its query parameters.
     ///
-    /// Browsers often request <c>/favicon.ico</c> alongside the callback, so
-    /// requests are looped over until one arrives on the expected path.
+    /// <para>Browsers often request <c>/favicon.ico</c> alongside the callback,
+    /// and any page open on this machine can issue a GET to a loopback port, so
+    /// requests are looped over until the one that is genuinely this sign-in's
+    /// redirect arrives: right path, and a <paramref name="expectedState"/>
+    /// matching the state this sign-in issued.</para>
     /// </summary>
+    /// <param name="timeout">
+    /// How long the whole wait may take — the user's authorization window.
+    /// </param>
+    /// <param name="expectedState">
+    /// The state this sign-in put in the authorize URL. A request to the
+    /// callback path carrying a different state — a stray GET from another
+    /// page — is answered like any other stray request and the wait
+    /// continues, instead of ending the attempt with an error that reads as
+    /// a forged callback.
+    /// </param>
     public async Task<IReadOnlyDictionary<string, string>> WaitForCallbackAsync(
         TimeSpan timeout,
+        string expectedState,
         CancellationToken ct = default)
     {
         if (!_started) throw new InvalidOperationException("Start() must be called first.");
@@ -75,19 +99,45 @@ public sealed class LoopbackListener(int port, string expectedPath) : IAsyncDisp
             using var client = await _listener.AcceptTcpClientAsync(timeoutCts.Token)
                 .ConfigureAwait(false);
 
-            var requestLine = await ReadRequestLineAsync(client, timeoutCts.Token)
-                .ConfigureAwait(false);
+            // A per-connection deadline, not the caller's whole authorization
+            // window. Any local process can connect to a loopback port — a
+            // browser preconnect, a port scanner — and one that connects and
+            // then sends no request line would otherwise park this loop until
+            // the window expired: the browser's real callback would never be
+            // accepted, and the sign-in would fail as a timeout with the tab
+            // still spinning. The deadline closes the silent connection and
+            // goes back to waiting.
+            using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+            connectionCts.CancelAfter(_connectionDeadline);
 
-            var query = ParseQuery(requestLine);
+            string requestLine;
+            try
+            {
+                requestLine = await ReadRequestLineAsync(client, connectionCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested
+                                                     && !timeoutCts.IsCancellationRequested)
+            {
+                // The connection's own deadline — not the user giving up and
+                // not the authorization window expiring, both of which
+                // propagate. One connection was silent; the next one may be
+                // the redirect.
+                continue;
+            }
+
+            var query = ParseQuery(requestLine, expectedState);
 
             if (query is not null)
             {
-                await WriteResponseAsync(client, timeoutCts.Token).ConfigureAwait(false);
+                await WriteResponseAsync(client, connectionCts.Token).ConfigureAwait(false);
                 return query;
             }
 
-            // Not our path (favicon, probe) — answer cheaply and keep waiting.
-            await WriteResponseAsync(client, timeoutCts.Token, "Waiting for authorization…", 404)
+            // Not our redirect — favicon, probe, or a stray request to the
+            // callback path. Answer cheaply and keep waiting: ending the wait
+            // here would abort a sign-in that was about to succeed.
+            await WriteResponseAsync(client, connectionCts.Token, "Waiting for authorization…", 404)
                 .ConfigureAwait(false);
         }
     }
@@ -105,7 +155,25 @@ public sealed class LoopbackListener(int port, string expectedPath) : IAsyncDisp
         return await reader.ReadLineAsync(ct).ConfigureAwait(false) ?? string.Empty;
     }
 
-    private IReadOnlyDictionary<string, string>? ParseQuery(string requestLine)
+    /// <summary>
+    /// Parses this sign-in's redirect out of a request line, or returns null
+    /// when the request is not the redirect.
+    ///
+    /// <para>Null, never an empty dictionary, is what "not ours" means. The
+    /// earlier version returned an empty dictionary for a request to the
+    /// callback path with no query string, and the accept loop treated any
+    /// non-null result as the redirect — so any page open on this machine
+    /// could end a pending sign-in with one query-less GET to a port that is
+    /// documented in AV-ALLOWLIST.md, leaving the user with an "OAuth state
+    /// mismatch" that described an attack rather than a stray request.</para>
+    ///
+    /// <para>What counts as the redirect: the right path, and a
+    /// <c>state</c> matching the one this sign-in issued. A redirect always
+    /// carries its state back, and the match is the forgery guard — so a
+    /// request to the right path without one, or with a state that is not
+    /// ours, is not the redirect.</para>
+    /// </summary>
+    private IReadOnlyDictionary<string, string>? ParseQuery(string requestLine, string expectedState)
     {
         // "GET /oauth/callback?code=...&state=... HTTP/1.1"
         var parts = requestLine.Split(' ');
@@ -118,14 +186,23 @@ public sealed class LoopbackListener(int port, string expectedPath) : IAsyncDisp
         if (!string.Equals(path, expectedPath, StringComparison.OrdinalIgnoreCase))
             return null;
 
+        // No query string at all: not the redirect, and answering it as one
+        // is the failure described above.
+        if (separator < 0 || separator == target.Length - 1) return null;
+
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (separator < 0 || separator == target.Length - 1) return result;
 
         foreach (var pair in target[(separator + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
             var eq = pair.IndexOf('=');
             if (eq <= 0) continue;
             result[Uri.UnescapeDataString(pair[..eq])] = Uri.UnescapeDataString(pair[(eq + 1)..]);
+        }
+
+        if (!result.TryGetValue("state", out var state) ||
+            !string.Equals(state, expectedState, StringComparison.Ordinal))
+        {
+            return null;
         }
 
         return result;

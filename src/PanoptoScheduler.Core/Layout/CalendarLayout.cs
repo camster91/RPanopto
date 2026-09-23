@@ -93,6 +93,31 @@ public static class CalendarLayout
     public static readonly double ClickSlop = 4.0;
 
     /// <summary>
+    /// The click threshold to use against a grid whose hours are drawn
+    /// <paramref name="hourHeight"/> pixels tall: <see cref="ClickSlop"/>, capped
+    /// at half of one drag snap at this scale.
+    ///
+    /// <para>The hour is fitted to the window, and at the bottom of the fitted
+    /// range — 36 pixels an hour — one five-minute snap is 3 pixels, so the fixed
+    /// slop was wider than the smallest move the grid could express. A deliberate
+    /// 3.5-pixel drag was then read as a click: it opened the details panel
+    /// instead of moving the recording, and unlike a move that lands wrong, that
+    /// misreading is invisible until the operator looks at the wrong day.</para>
+    ///
+    /// <para>Half a snap rather than a full one, so a press either sits inside a
+    /// single snap or has crossed a boundary — there is no width of travel that
+    /// counts as neither gesture. At large hour heights the cap is above the
+    /// slop and the slop stands unchanged.</para>
+    /// </summary>
+    public static double ClickSlopAt(double hourHeight)
+    {
+        if (double.IsNaN(hourHeight) || hourHeight <= 0) return ClickSlop;
+
+        var halfSnap = hourHeight * DragSnap.TotalMinutes / 60.0 / 2.0;
+        return Math.Min(ClickSlop, halfSnap);
+    }
+
+    /// <summary>
     /// Whether a press that travelled <paramref name="dx"/> by
     /// <paramref name="dy"/> was a click rather than a drag.
     ///

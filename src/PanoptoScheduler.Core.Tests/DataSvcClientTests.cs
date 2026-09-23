@@ -130,6 +130,47 @@ public class DataSvcClientTests
         Assert.Equal(2, handler.Calls);
     }
 
+    /// <summary>
+    /// The completeness contract. A walk that reached the server's own count
+    /// is complete; one that stopped because <c>Page</c> was ignored is not,
+    /// however many rows it holds. The calendar and the conflict check both
+    /// have to tell a half-read set from a quiet tenant, and before the flag
+    /// existed the two were indistinguishable — the ignored-Page case above
+    /// returned 250 of 900 and looked exactly like a tenant with 250 sessions.
+    /// </summary>
+    [Fact]
+    public async Task A_walk_that_reached_the_count_is_Complete_and_an_ignored_Page_is_not()
+    {
+        var (whole, _) = Build(total: 400, pageSize: 250);
+        var (ignored, _) = Build(total: 900, pageSize: 250, honoursPage: false);
+
+        var readWhole = await whole.GetAllSessionsAsync([1]);
+        var readPartial = await ignored.GetAllSessionsAsync([1]);
+
+        Assert.True(readWhole.Complete);
+        Assert.Equal(400, readWhole.ReportedTotal);
+
+        Assert.False(readPartial.Complete);
+        Assert.Equal(900, readPartial.ReportedTotal);
+    }
+
+    /// <summary>
+    /// The page ceiling ends the walk with the flag down, so a tenant larger
+    /// than the ceiling is reported as a partial read rather than drawn as the
+    /// whole world.
+    /// </summary>
+    [Fact]
+    public async Task The_page_ceiling_leaves_Complete_false()
+    {
+        var (client, handler) = Build(total: 100_000, pageSize: 250);
+
+        var sessions = await client.GetAllSessionsAsync([1]);
+
+        Assert.False(sessions.Complete);
+        Assert.Equal(40, handler.Calls);
+        Assert.Equal(10_000, sessions.Count);
+    }
+
     /// <summary>Every row appears once, however many pages it took.</summary>
     [Fact]
     public async Task Pages_do_not_duplicate_rows()

@@ -414,8 +414,19 @@ public class BulkSchedulerTests
         Assert.Equal(Guid.Parse(SessionGuid), report.Outcomes[0].SessionId);
     }
 
+    /// <summary>
+    /// The presenter write carries the id the booking call itself returned,
+    /// which is the only id the SOAP side knows. On the live tenant that id
+    /// (the DeliveryID) is not the session's id in Data.svc, and the write
+    /// was "fixed" once by handing it the other one — the tenant refused it
+    /// as an Invalid Session Id and the presenter never landed, while the
+    /// suite stayed green, because the only thing asserted anywhere was that
+    /// the call had happened at all. So the body is pinned against the run's
+    /// other guids: the booking call's answer, and not the recorder's or the
+    /// folder's, which are the other two alive in the same run.
+    /// </summary>
     [Fact]
-    public async Task Sets_the_presenter_as_the_session_description()
+    public async Task The_presenter_write_carries_the_id_the_booking_returned()
     {
         var (scheduler, handler) = Build(h => h
             .Respond("ListRecorders", RecorderListing((RecorderGuid, "JMHH240")))
@@ -423,10 +434,15 @@ public class BulkSchedulerTests
             .Respond("ScheduleRecording", Scheduled())
             .Respond("UpdateSessionDescription", ""));
 
-        await scheduler.RunAsync([Row(presenter: "Stew Mixalot")],
+        var report = await scheduler.RunAsync([Row(presenter: "Stew Mixalot")],
             new BulkScheduleOptions { DryRun = false });
 
-        Assert.Contains("UpdateSessionDescription", handler.Calls);
+        var write = handler.Bodies[handler.Calls.IndexOf("UpdateSessionDescription")];
+
+        Assert.Contains(SessionGuid, write);
+        Assert.DoesNotContain(RecorderGuid, write);
+        Assert.DoesNotContain(FolderGuid, write);
+        Assert.Equal(Guid.Parse(SessionGuid), report.Outcomes[0].SessionId);
     }
 
     [Fact]

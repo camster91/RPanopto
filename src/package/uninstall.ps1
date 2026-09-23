@@ -55,7 +55,13 @@ if (-not $FromTemp) {
     $temp = Join-Path $env:TEMP ('panopto-scheduler-uninstall-' + [Guid]::NewGuid().ToString('N') + '.ps1')
     Copy-Item -LiteralPath $scriptPath -Destination $temp -Force
 
-    $forward = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $temp, '-FromTemp')
+    # Windows PowerShell 5.1's Start-Process joins an ArgumentList with spaces
+    # and quotes nothing, so a TEMP under a username with spaces would hand the
+    # inner run a broken -File path: it would fail to start, and because every
+    # removal in this script happens inside that inner run, an uninstall would
+    # "succeed" at removing nothing. The file path is the only element that can
+    # contain a space - the switches are fixed - so it is the only one quoted.
+    $forward = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $temp + '"'), '-FromTemp')
     if ($Purge) { $forward += '-Purge' }
     if ($Force) { $forward += '-Force' }
 
@@ -94,6 +100,12 @@ function Remove-OurShortcut([string] $Folder, [string] $InstalledExe) {
     # Read before deleting. A shortcut is nothing but a file with a name, and
     # someone else's shortcut could plausibly be called the same thing; only
     # remove this one if it actually points at the program we are removing.
+    #
+    # A target that cannot be read is left alone rather than deleted: an
+    # unreadable shortcut cannot be shown to be this program's, and "maybe it
+    # was ours" is not evidence enough to remove something from someone's
+    # desktop. The operator can delete it by hand; the reverse mistake would
+    # remove something that was never ours.
     $points = ''
     try { $points = $shell.CreateShortcut($path).TargetPath } catch { }
     if ($points -and $InstalledExe -and ($points -ieq $InstalledExe)) {
@@ -102,8 +114,7 @@ function Remove-OurShortcut([string] $Folder, [string] $InstalledExe) {
     } elseif ($points) {
         Write-Host "  left alone $path (it points at $points, not at this program)" -ForegroundColor Yellow
     } else {
-        Remove-Item -LiteralPath $path -Force
-        Write-Host "  removed    $path"
+        Write-Host "  left alone $path (its target could not be read, so it cannot be shown to be this program's)" -ForegroundColor Yellow
     }
 }
 
@@ -135,11 +146,19 @@ if (Test-Path $RegistryKey) {
 # script is being run by hand out of the folder you unzipped, that folder is
 # somewhere else entirely - and deleting the folder a person is standing in
 # because they asked to uninstall a program would be indefensible.
+#
+# The comparison demands the separator, not just the prefix: a sibling such as
+# ...\ProgramsTools or ...\Programs2 starts with "...\Programs" and would pass a
+# bare prefix test, and so would the Programs folder itself - deleting which
+# removes every program this account has installed, so equality is rejected
+# too.
 $underPrograms = $false
 try {
     $full = [System.IO.Path]::GetFullPath($folder)
-    $root = [System.IO.Path]::GetFullPath($Programs)
-    $underPrograms = $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+    $root = [System.IO.Path]::GetFullPath($Programs).TrimEnd('\')
+    $underPrograms = ($full -ne $root) -and
+        $full.StartsWith($root + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase)
 } catch { $underPrograms = $false }
 
 if (-not $underPrograms) {

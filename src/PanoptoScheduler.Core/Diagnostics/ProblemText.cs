@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using PanoptoScheduler.Core.Auth;
 using PanoptoScheduler.Core.Clients;
 
 namespace PanoptoScheduler.Core.Diagnostics;
@@ -42,10 +43,15 @@ public static class ProblemText
         // what "one or more errors occurred" is.
         if (First<PanoptoSoapFaultException>(chain) is { } fault)
         {
-            // The fault's own message is Panopto's, and it is written for a
+            // The fault's own sentence is Panopto's, and it is written for a
             // person — "The remote recorder is already in use at this time" —
-            // so it is worth passing through, unlike most of what arrives here.
-            return $"Panopto rejected the change: {Clean(fault.Message)}";
+            // so it is worth passing through, unlike most of what arrives
+            // here. RawMessage, deliberately: fault.Message already begins
+            // "Panopto rejected <operation>", and interpolating it here would
+            // say "Panopto rejected the change: Panopto rejected
+            // ScheduleRecording: …" — a doubled prefix plus an internal
+            // operation name, which the contract above forbids.
+            return $"Panopto rejected the change: {Clean(fault.RawMessage)}";
         }
 
         if (First<PanoptoRequestException>(chain) is { } request)
@@ -68,6 +74,18 @@ public static class ProblemText
                     $"Panopto would not accept the request (HTTP {(int)request.Status} "
                     + $"from {Clean(request.Endpoint)}).",
             };
+        }
+
+        if (First<SignInWindowExpiredException>(chain) is { } expired)
+        {
+            // The one timeout that is not Panopto's: nothing had been sent
+            // anywhere when this window ran out. The browser step was opened
+            // and never finished, so the sentence has to name that step and
+            // the window — a generic "try again" reads as the server being
+            // busy, and the tab they forgot is still open.
+            return "The sign-in was not finished: the browser step stayed open past the "
+                 + $"{(int)expired.Window.TotalMinutes}-minute window without being completed. "
+                 + "Start the sign-in again and finish it in the browser this time.";
         }
 
         if (First<TimeoutException>(chain) is not null

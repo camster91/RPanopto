@@ -25,7 +25,7 @@ public class LoopbackListenerTests
         await using var listener = new LoopbackListener(port, "/oauth/callback");
         listener.Start();
 
-        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15));
+        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), "xyz");
 
         var stray = await SendAsync(port, "/favicon.ico");
         Assert.Contains("404", stray);
@@ -47,24 +47,91 @@ public class LoopbackListenerTests
         listener.Start();
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
-        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), timeout.Token);
+        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), "xyz", timeout.Token);
 
         await SendAsync(port, "/something-else?code=nope");
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
     }
 
+    /// <summary>
+    /// A request to the callback path with no query string is not the
+    /// redirect, and answering it as one was the bug: any page open on this
+    /// machine could end a pending sign-in with one query-less GET, leaving
+    /// the user an "OAuth state mismatch" that described an attack rather
+    /// than a stray request. This test pins the opposite — the listener
+    /// 404s it and keeps waiting for the real redirect.
+    /// </summary>
     [Fact]
-    public async Task Captures_a_callback_that_carries_no_query_string()
+    public async Task A_query_less_request_to_the_callback_path_is_ignored()
     {
         var port = FreePort();
         await using var listener = new LoopbackListener(port, "/oauth/callback");
         listener.Start();
 
-        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15));
-        await SendAsync(port, "/oauth/callback");
+        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), "xyz");
 
-        Assert.Empty(await pending);
+        var answer = await SendAsync(port, "/oauth/callback");
+        Assert.Contains("404", answer);
+
+        var callback = await SendAsync(port, "/oauth/callback?code=abc123&state=xyz");
+        Assert.Contains("200", callback);
+
+        var query = await pending;
+        Assert.Equal("abc123", query["code"]);
+    }
+
+    /// <summary>
+    /// The same defect one level up: a redirect whose state does not match
+    /// this sign-in's is not this sign-in's redirect, and consuming it would
+    /// abort the attempt with an error that reads as a forged callback. The
+    /// listener keeps waiting for the one carrying the right state.
+    /// </summary>
+    [Fact]
+    public async Task A_redirect_with_a_mismatched_state_is_ignored()
+    {
+        var port = FreePort();
+        await using var listener = new LoopbackListener(port, "/oauth/callback");
+        listener.Start();
+
+        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), "the-real-state");
+
+        var answer = await SendAsync(port, "/oauth/callback?code=abc123&state=someone-elses");
+        Assert.Contains("404", answer);
+
+        var callback = await SendAsync(port, "/oauth/callback?code=abc123&state=the-real-state");
+        Assert.Contains("200", callback);
+
+        var query = await pending;
+        Assert.Equal("the-real-state", query["state"]);
+    }
+
+    /// <summary>
+    /// A connection that says nothing at all cannot park the wait for the
+    /// whole five-minute authorization window — the deadline closes it and
+    /// the next connection, the real redirect, is still accepted.
+    /// </summary>
+    [Fact]
+    public async Task A_silent_connection_does_not_consume_the_wait()
+    {
+        var port = FreePort();
+        // The real deadline is ten seconds; the point here is that the wait
+        // survives a silent connection, not that it waits ten seconds to say
+        // so.
+        await using var listener = new LoopbackListener(port, "/oauth/callback", TimeSpan.FromMilliseconds(250));
+        listener.Start();
+
+        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), "xyz");
+
+        // Connect and send nothing — hold it open until the redirect is done.
+        using var silent = new TcpClient();
+        await silent.ConnectAsync(IPAddress.Loopback, port);
+
+        var callback = await SendAsync(port, "/oauth/callback?code=abc123&state=xyz");
+        Assert.Contains("200", callback);
+
+        var query = await pending;
+        Assert.Equal("abc123", query["code"]);
     }
 
     [Fact]
@@ -73,7 +140,7 @@ public class LoopbackListenerTests
         await using var listener = new LoopbackListener(FreePort(), "/oauth/callback");
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => listener.WaitForCallbackAsync(TimeSpan.FromSeconds(1)));
+            () => listener.WaitForCallbackAsync(TimeSpan.FromSeconds(1), "xyz"));
     }
 
     private static async Task<string> SendAsync(int port, string target)

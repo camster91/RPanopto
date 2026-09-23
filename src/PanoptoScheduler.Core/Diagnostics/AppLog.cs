@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using PanoptoScheduler.Core.Clients;
 
 namespace PanoptoScheduler.Core.Diagnostics;
 
@@ -49,6 +50,23 @@ public static class AppLog
     public static string Directory
         => RedirectDirectory ?? Path.Combine(Configuration.CredentialStore.Directory, "logs");
 
+    /// <summary>
+    /// Whether the most recent write could not be written at all.
+    ///
+    /// <para>The <c>catch</c> below deliberately swallows — a log that cannot be
+    /// written must not be what fails the app — but swallowing is not the same
+    /// as succeeding. The crash handler's dialog tells the operator "a log of
+    /// what happened was written, please send it on", and with a dead log that
+    /// promise names a file that does not exist, which is worse than no
+    /// promise: the one artifact the operator was asked for is nowhere, and
+    /// nothing says so. This flag is how the dialog knows to say the opposite.</para>
+    ///
+    /// <para>It carries the <i>most recent</i> write's verdict rather than
+    /// remembering any failure, so a log that recovers stops announcing its
+    /// death.</para>
+    /// </summary>
+    public static bool LastWriteFailed { get; private set; }
+
     /// <summary>Today's file, so a support call asks for one predictable name.</summary>
     public static string CurrentFile => Path.Combine(Directory,
         $"app-{DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}.log");
@@ -76,10 +94,18 @@ public static class AppLog
                 System.IO.Directory.CreateDirectory(Directory);
                 File.AppendAllText(CurrentFile, line + Environment.NewLine);
             }
+
+            // The write landed, so the flag's previous verdict — if there was
+            // one — is stale. See LastWriteFailed for who reads it.
+            LastWriteFailed = false;
         }
         catch
         {
             // A log that cannot be written must not be what fails the app.
+            // Recorded rather than only swallowed: LastWriteFailed is how the
+            // crash handler knows not to promise the operator a file that
+            // does not exist.
+            LastWriteFailed = true;
         }
     }
 
@@ -107,6 +133,21 @@ public static class AppLog
         for (var current = error; current is not null; current = current.InnerException)
         {
             text.AppendLine($"{current.GetType().FullName}: {current.Message}");
+
+            // A PanoptoRequestException carries the response body because a
+            // 400 or a 500 from the tenant says what it objected to in that
+            // body, and the Message names only the endpoint and the status.
+            // Both clients truncate it to 400 characters precisely so it can
+            // be written down here — it used to be captured and never
+            // rendered, which left the log holding the wrapper's sentence
+            // while the one line Panopto wrote for a person went nowhere.
+            // The full text is the record, so that is where it goes; the
+            // one-line summary stays without it, because the body is a
+            // fragment for whoever reads the log, not a sentence for the
+            // status line.
+            if (current is PanoptoRequestException { Body.Length: > 0 } request)
+                text.AppendLine($"  body: {request.Body}");
+
             if (current.StackTrace is { } stack) text.AppendLine(stack);
             if (current.InnerException is not null) text.AppendLine("  --- inner ---");
         }

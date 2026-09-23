@@ -33,7 +33,13 @@
 [CmdletBinding()]
 param(
     # Where the zip lands. Defaults to src\dist.
-    [string] $OutputDirectory
+    [string] $OutputDirectory,
+
+    # SHA-1 thumbprint of a code-signing certificate in the current user's or
+    # the machine's store. When given, the executable and the two install
+    # scripts are signed inside this script, after they are staged and before
+    # the zip is built.
+    [string] $CertificateThumbprint
 )
 
 $ErrorActionPreference = "Stop"
@@ -219,6 +225,45 @@ foreach ($name in $packageFiles) {
     Copy-Item (Join-Path $package $name) (Join-Path $publish $name) -Force
 }
 Write-Host "  Added Install.cmd and its two scripts (per-user install, no admin)."
+
+# Signed inside this script or not at all. The zip is built a few lines below,
+# and the top of the next run deletes the publish folder -- so a signature
+# added after the script exits signs a folder nobody will ever zip, and the
+# exe in the shipped zip stays unsigned. That is what the README used to ask
+# for with "after publishing and before zipping": a window that did not exist,
+# because publishing and zipping happened in one uninterruptible run.
+if ($CertificateThumbprint) {
+    # signtool ships with the Windows SDK, not with Windows, and the SDK parks
+    # it one versioned folder deep -- so it is searched for rather than
+    # assumed on PATH, newest version first.
+    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\x64\\' } |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1
+    if (-not $signtool) {
+        throw @"
+signtool.exe was not found under Windows Kits. It ships with the Windows SDK,
+not with Windows itself. Install the SDK and publish again -- the zip was
+deliberately not built from unsigned files when a signature was asked for.
+"@
+    }
+
+    # The /tr timestamp is not cosmetics: without it the signature stops being
+    # valid the day the certificate expires, and every installed copy starts
+    # warning again.
+    $toSign = @(
+        (Join-Path $publish $exeName),
+        (Join-Path $publish "install.ps1"),
+        (Join-Path $publish "uninstall.ps1")
+    )
+    foreach ($file in $toSign) {
+        & $signtool.FullName sign /sha1 $CertificateThumbprint /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 $file
+        if ($LASTEXITCODE -ne 0) {
+            throw "signtool failed (exit code $LASTEXITCODE) on $(Split-Path -Leaf $file) -- the zip was not built."
+        }
+    }
+    Write-Host "  Signed $exeName, install.ps1 and uninstall.ps1."
+}
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 if (Test-Path $zip) { Remove-Item $zip -Force }

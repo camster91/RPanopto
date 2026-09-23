@@ -99,14 +99,22 @@ public class RoomClockTests
     /// The current instant may arrive without a marker — a value built in a test,
     /// or read from a source that dropped it. It means UTC here either way, and
     /// must not be honoured as a local time.
+    ///
+    /// <para>The end is chosen to lie strictly between the two readings, the
+    /// way the sibling test above uses 15:00 against a 14:00 now: honoured as
+    /// UTC, the room's now is 14:00 and the block is still to come; honoured
+    /// as a local time, the same value is 18:00 in the room and the block is
+    /// long gone. The earlier version of this test asserted the equality of
+    /// two bools computed with an end that lay before both readings, so both
+    /// were true whatever the conversion did — it could not fail on the very
+    /// machines, in or east of the room's zone, where treating the instant as
+    /// local would bite.</para>
     /// </summary>
     [Fact]
     public void An_unmarked_instant_is_still_read_as_utc()
-        => Assert.Equal(
-            RoomClock.WouldLandInThePast(new DateTime(2026, 7, 15, 13, 0, 0), Toronto,
-                new DateTime(2026, 7, 15, 18, 0, 0, DateTimeKind.Utc)),
-            RoomClock.WouldLandInThePast(new DateTime(2026, 7, 15, 13, 0, 0), Toronto,
-                new DateTime(2026, 7, 15, 18, 0, 0)));
+        => Assert.False(RoomClock.WouldLandInThePast(
+            new DateTime(2026, 7, 15, 15, 0, 0), Toronto,
+            new DateTime(2026, 7, 15, 18, 0, 0)));
 
     /// <summary>
     /// The room's now, against the real clock. Rounded to the minute, because the

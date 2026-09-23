@@ -90,11 +90,19 @@ internal static class SoapXml
     /// <summary>
     /// The guids of a repeated child. WCF arrays wrap each item in an element
     /// named after the item type, so the item name varies by field; every
-    /// element that parses as a guid is taken.
+    /// child element that parses as a guid is taken.
+    ///
+    /// <para>Stepping through the child elements rather than
+    /// <see cref="XContainer.Descendants"/> from the wrapper: the wrapper's own
+    /// concatenated text parses as a guid in the single-item case Panopto
+    /// actually returns for one booking — the same guid, twice — so a count or
+    /// cleanup loop over the result would act on the one session twice. The
+    /// multi-item case hides the defect, because concatenating two guids does
+    /// not parse, which is exactly why the earlier test could not see it.</para>
     /// </summary>
     public static IReadOnlyList<Guid> Guids(XElement? parent, string localName)
         => Children(parent, localName)
-            .DescendantsAndSelf()
+            .Elements()
             .Select(Guid)
             .Where(g => g is not null && g != System.Guid.Empty)
             .Select(g => g!.Value)
