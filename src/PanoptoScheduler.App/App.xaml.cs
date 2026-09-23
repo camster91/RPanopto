@@ -357,14 +357,10 @@ public partial class App : Application
 
         try
         {
-            MessageBox.Show(
-                "Panopto Scheduler hit an unexpected problem and has to close.\n\n"
-                + $"A log of what happened was written to:\n{AppLog.Directory}\n\n"
-                + "Please send that file on, along with what you were doing at the time.\n\n"
-                + $"({error.GetType().Name}: {error.Message})",
-                $"Panopto Scheduler {Version}",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+            FailureDialog.Show(
+                "Panopto Scheduler hit an unexpected problem and has to close.",
+                error,
+                $"Panopto Scheduler {Version}");
         }
         catch
         {

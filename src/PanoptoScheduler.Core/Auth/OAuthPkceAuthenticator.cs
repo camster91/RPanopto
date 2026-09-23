@@ -165,11 +165,27 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
             if (_tokens is null || !_tokens.CanRefresh)
                 throw new InvalidOperationException("Not signed in. Call SignInAsync first.");
 
-            _tokens = await ExchangeAsync(new Dictionary<string, string>
+            try
             {
-                ["grant_type"] = "refresh_token",
-                ["refresh_token"] = _tokens.RefreshToken!,
-            }, ct).ConfigureAwait(false);
+                _tokens = await ExchangeAsync(new Dictionary<string, string>
+                {
+                    ["grant_type"] = "refresh_token",
+                    ["refresh_token"] = _tokens.RefreshToken!,
+                }, ct).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                // The server answered and refused this refresh token: it is
+                // revoked or spent, so retrying it can never succeed. Drop the
+                // whole session (memory and cache) so the next call reports
+                // "not signed in" instead of re-burning the same dead token
+                // once per row in every bulk run. Network-level failures
+                // (HttpRequestException, timeouts) are transient and do not
+                // clear anything — a retry may still succeed once Panopto
+                // answers again.
+                SignOut();
+                throw;
+            }
 
             // Panopto may rotate the refresh token, so the cache has to follow
             // the new one or the next launch presents a token that is already spent.

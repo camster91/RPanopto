@@ -68,12 +68,19 @@ public static class LegacyScheduleReader
     /// day-first/month-first question the numeric lists have to ask does not
     /// arise. Invariant month names match case-insensitively, which is what lets
     /// one list cover both <c>feb</c> and <c>Oct</c>.</para>
+    ///
+    /// <para>Two-digit years are deliberately absent. <c>ParseExact</c> pivots
+    /// them through <c>TwoDigitYearMax</c> (2029 under the invariant culture),
+    /// so <c>26-feb-30</c> reads as 1930 — a wrong-century import that only a
+    /// future term's file could trigger. The real files all spell the year
+    /// out, so the entry would buy coverage for a spelling that reads the
+    /// century wrong.</para>
     /// </summary>
     private static readonly string[] MonthNameDateFormats =
     [
-        "d-MMM-yyyy", "dd-MMM-yyyy", "d-MMM-yy",
-        "d MMM yyyy", "dd MMM yyyy", "d MMM yy",
-        "d/MMM/yyyy", "MMM d, yyyy", "MMM d, yy",
+        "d-MMM-yyyy", "dd-MMM-yyyy",
+        "d MMM yyyy", "dd MMM yyyy",
+        "d/MMM/yyyy", "MMM d, yyyy",
     ];
 
     private static readonly string[] MonthFirstFormats = ["M/d/yyyy", "M/d/yy", "M-d-yyyy"];

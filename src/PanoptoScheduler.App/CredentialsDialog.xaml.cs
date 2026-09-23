@@ -12,9 +12,17 @@ public partial class CredentialsDialog : Window
     /// <summary>The default every Rotman user needs, so most people change none of it.</summary>
     private const string DefaultTenant = "https://rotman.ca.panopto.com";
 
+    /// <summary>
+    /// The credentials as loaded, kept so Save can carry the fields this dialog
+    /// does not edit rather than resetting them.
+    /// </summary>
+    private readonly PanoptoCredentials? _existing;
+
     public CredentialsDialog(PanoptoCredentials? existing = null, string? initialError = null)
     {
         InitializeComponent();
+
+        _existing = existing;
 
         TenantBox.Text = existing?.TenantUrl ?? DefaultTenant;
         ClientIdBox.Text = existing?.ClientId ?? string.Empty;
@@ -51,11 +59,18 @@ public partial class CredentialsDialog : Window
             return;
         }
 
+        // TimeZone and RedirectUri are not editable here, so carry them over
+        // from whatever loaded — including the partially-loaded values shown
+        // above — rather than resetting a hand-edited credentials.json to the
+        // compile-time defaults. A reset TimeZone is load-bearing: writes name
+        // the instant, so the wrong zone books rooms hours off with no error.
         var credentials = new PanoptoCredentials
         {
             TenantUrl = tenant,
             ClientId = clientId,
             ClientSecret = secret,
+            TimeZone = _existing?.TimeZone ?? Core.Scheduling.RoomClock.DefaultZoneId,
+            RedirectUri = _existing?.RedirectUri ?? "http://localhost:51820/oauth/callback",
         };
 
         try

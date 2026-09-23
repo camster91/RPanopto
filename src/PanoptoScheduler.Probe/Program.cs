@@ -440,65 +440,40 @@ internal static class Program
             : 5;
 
     /// <summary>
-    /// Proves the write path end to end, and leaves the tenant as it found it.
-    ///
-    /// <para><b>This is the only thing in this program that writes.</b> It books
-    /// one short session, reads it back through the same <c>Data.svc</c> path the
-    /// calendar uses, compares the time it gets against the time it asked for,
-    /// and deletes the session — including when the comparison fails, so a failed
-    /// run does not leave a stray recording in a real room.</para>
-    ///
-    /// <para><b>Why it has to be live.</b> Every other question about the time
-    /// model was answerable by reading the tenant. This one is not: the write and
-    /// the read are opposite directions, and only a booking proves which way the
-    /// write points. The trailing <c>Z</c> in the request <i>means UTC</i>, so the
-    /// room's wall clock has to be converted into the instant that hour names
-    /// before it goes out — and sending the digits unconverted, which is what this
-    /// probe first did, was accepted, confirmed, and drew correctly here while
-    /// landing four hours early. That failure is invisible: the call succeeds, the
-    /// app draws the session correctly, and the recording happens hours away from
-    /// when it was asked for.</para>
-    ///
-    /// <para>Read back through <see cref="DataSvcClient"/> rather than a second
-    /// parser, so what is compared is exactly what the calendar would show.</para>
-    /// </summary>
-    /// <summary>
-    /// Sends session queries side by side and reports what each actually came
-    /// back with — row count, the server's own <c>TotalNumber</c>, the status
+    /// Sends session queries side by side and calls each listing several times —
+    /// in a row and then at the same time — reporting what each actually came
+    /// back with: row count, the server's own <c>TotalNumber</c>, the status
     /// values present, and the first row's id.
     ///
-    /// <para><b>Why this exists.</b> A listing that returns 250 rows looks like a
-    /// complete listing. Several different faults produce exactly that: the
-    /// server ignoring <c>Page</c>, the server ignoring the <c>Status</c> filter
-    /// and handing back a default slice, or the slice genuinely being the whole
-    /// set. Measured on the live tenant: <c>TotalNumber</c> is 2024 while every
-    /// page returned the same 250 rows, all of them completed rather than
-    /// scheduled — the filter and the paging were both being dropped. Running the
-    /// bodies side by side settled it: <c>GetSessions</c> binds its JSON
-    /// case-sensitively and silently ignores a mis-cased field, so the model's
-    /// PascalCase request bound nothing and the server answered with its default
-    /// slice. The casing is fixed; this mode stays because a field the server does
-    /// not recognise still produces no error, only a wrong answer.</para>
+    /// <para><b>Why the query comparison exists.</b> A listing that returns 250
+    /// rows looks like a complete listing. Several different faults produce
+    /// exactly that: the server ignoring <c>Page</c>, the server ignoring the
+    /// <c>Status</c> filter and handing back a default slice, or the slice
+    /// genuinely being the whole set. Measured on the live tenant:
+    /// <c>TotalNumber</c> is 2024 while every page returned the same 250 rows,
+    /// all of them completed rather than scheduled — the filter and the paging
+    /// were both being dropped. Running the bodies side by side settled it:
+    /// <c>GetSessions</c> binds its JSON case-sensitively and silently ignores a
+    /// mis-cased field, so the model's PascalCase request bound nothing and the
+    /// server answered with its default slice. The casing is fixed; this mode
+    /// stays because a field the server does not recognise still produces no
+    /// error, only a wrong answer.</para>
     ///
-    /// <para>The bodies are spelled out rather than built from the model, because
-    /// the model is one of the things under test: a field the server does not
-    /// recognise is silently ignored, so a request that binds <i>nothing</i>
+    /// <para>The query bodies are spelled out rather than built from the model,
+    /// because the model is one of the things under test: a field the server does
+    /// not recognise is silently ignored, so a request that binds <i>nothing</i>
     /// still looks like a successful request from here.</para>
     ///
-    /// <para>Read-only.</para>
-    /// </summary>
-    /// <summary>
-    /// Calls each listing several times, in a row and then at the same time, and
-    /// reports what came back.
+    /// <para><b>Why the repeated calls exist.</b> The app's own log showed
+    /// something impossible: the Rotman tenant has 19 recorders and 447 folders,
+    /// yet the app records <c>stopped at the 60-page ceiling after 15000
+    /// item(s)</c> for <i>both</i> listings — 15000 being exactly the ceiling. A
+    /// single call from this probe returns 19 and 447 correctly, so the fault is
+    /// not in the paging and not in the tenant: it is something about calling
+    /// these repeatedly, or while another listing is in flight, which is exactly
+    /// what the app does and this probe previously never did.</para>
     ///
-    /// <para>Written because the app's own log shows something impossible: the
-    /// Rotman tenant has 19 recorders and 447 folders, yet the app records
-    /// <c>stopped at the 60-page ceiling after 15000 item(s)</c> for
-    /// <i>both</i> listings — 15000 being exactly the ceiling. A single call from
-    /// this probe returns 19 and 447 correctly, so the fault is not in the paging
-    /// and not in the tenant: it is something about calling these repeatedly, or
-    /// while another listing is in flight, which is exactly what the app does and
-    /// this probe previously never did.</para>
+    /// <para>Read-only.</para>
     /// </summary>
     private static async Task<int> DumpListingsAsync(
         RemoteRecorderClient recorders,
@@ -671,6 +646,29 @@ internal static class Program
         return firstId;
     }
 
+    /// <summary>
+    /// Proves the write path end to end, and leaves the tenant as it found it.
+    ///
+    /// <para><b>This is the only thing in this program that writes.</b> It books
+    /// one short session, reads it back through the same <c>Data.svc</c> path the
+    /// calendar uses, compares the time it gets against the time it asked for,
+    /// and deletes the session — including when the comparison fails, so a failed
+    /// run does not leave a stray recording in a real room.</para>
+    ///
+    /// <para><b>Why it has to be live.</b> Every other question about the time
+    /// model was answerable by reading the tenant. This one is not: the write and
+    /// the read are opposite directions, and only a booking proves which way the
+    /// write points. The trailing <c>Z</c> in the request <i>means UTC</i>, so the
+    /// room's wall clock has to be converted into the instant that hour names
+    /// before it goes out — and sending the digits unconverted, which is what this
+    /// probe first did, was accepted, confirmed, and drew correctly here while
+    /// landing four hours early. That failure is invisible: the call succeeds, the
+    /// app draws the session correctly, and the recording happens hours away from
+    /// when it was asked for.</para>
+    ///
+    /// <para>Read back through <see cref="DataSvcClient"/> rather than a second
+    /// parser, so what is compared is exactly what the calendar would show.</para>
+    /// </summary>
     private static async Task<int> VerifyWriteAsync(
         HttpClient http,
         IPanoptoAuthenticator auth,

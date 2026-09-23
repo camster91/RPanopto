@@ -38,12 +38,25 @@ public sealed class PanoptoConnection : IAsyncDisposable
     /// write into the operator's real trail from a test run. Keeping it a parameter
     /// means the app decides to keep a record and nothing else does.</para>
     /// </param>
+    /// <param name="http">
+    /// The client every sub-client shares. The app takes the default; tests
+    /// hand in one over a scripted handler, so the sign-out and exchange
+    /// guarantees can be driven through <see cref="SignOut"/> itself rather
+    /// than through the pieces it calls.
+    /// </param>
     public PanoptoConnection(
         PanoptoCredentials credentials,
         ITokenStore? tokenStore = null,
-        IBulkAuditLog? auditLog = null)
+        IBulkAuditLog? auditLog = null,
+        HttpClient? http = null)
     {
-        _http = new HttpClient
+        // Cookies are handled by hand: the legacy .ASPXAUTH the SOAP path needs
+        // lives in two app-level caches and is sent as a header. The default
+        // handler's own CookieContainer would silently hold a third copy that
+        // no sign-out can reach — HttpClient exposes no way to clear it — and
+        // that copy would keep authenticating requests as the previous user
+        // after a sign-out on a shared machine.
+        _http = http ?? new HttpClient(new SocketsHttpHandler { UseCookies = false })
         {
             // Every path handed to these clients is tenant-relative.
             BaseAddress = new Uri(credentials.TenantUrl),

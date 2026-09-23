@@ -647,12 +647,11 @@ public sealed class CalendarViewModel : ObservableObject
     public bool HasEditNote => _editNote.Length > 0;
 
     /// <summary>
-    /// Whether this panel can write at all, which is Panopto's answer and not this
-    /// app's. Everything below is gated on it, so the buttons are disabled with an
-    /// explanation rather than failing on the press.
-    /// </summary>
-    /// <summary>
-    /// Whether the panel's edits are armed.
+    /// Whether the panel's edits are armed: signed in, the block reporting
+    /// itself writable, and nothing already running. Writability is Panopto's
+    /// answer and not this app's, and everything below is gated on this, so
+    /// the buttons are disabled with an explanation rather than failing on
+    /// the press.
     ///
     /// <para>Signed-in is a condition of its own, not something writability
     /// implies. A block can report itself writable from its own JSON while the
@@ -1626,14 +1625,22 @@ public sealed class CalendarViewModel : ObservableObject
             // Not rethrown, and it used to be — which is how a drag that timed
             // out closed the app. The block was snapped back before the call and
             // the local model was never updated, so the grid cannot be showing
-            // the answer: only a read can say whether the move landed. The read
-            // sets the status line itself, so the sentence goes on after it, the
-            // same order the successful path uses.
-            await LoadAsync(jumpToFirst: false).ConfigureAwait(true);
+            // the answer: only a read can say whether the move landed.
+            var reloaded = await LoadAsync(jumpToFirst: false).ConfigureAwait(true);
 
             Status = "Panopto did not answer in time.";
-            Detail = $"{block.Title} may or may not have moved. The week has just been "
-                   + "re-read, so what is on screen is what Panopto holds.";
+
+            // The reassurance is earned or withheld, not assumed: LoadAsync
+            // swallows its own failure, so a re-read that could not reach
+            // Panopto leaves the grid showing the pre-drag snapshot — claiming
+            // then that "what is on screen is what Panopto holds" would give
+            // false certainty about a write whose fate is unknown.
+            Detail = reloaded
+                ? $"{block.Title} may or may not have moved. The week has just been "
+                  + "re-read, so what is on screen is what Panopto holds."
+                : $"{block.Title} may or may not have moved, and the week could not be "
+                  + "re-read — the screen still shows the position from before the drag. "
+                  + "Refresh when Panopto answers to see where it really landed.";
 
             // False, and it is the honest value rather than the tidy one: every
             // other path returning false is saying "the grid is showing the
@@ -1709,9 +1716,16 @@ public sealed class CalendarViewModel : ObservableObject
     /// operator off the week they were working in and onto the far end of the
     /// calendar, which reads as the app having lost their place.
     /// </param>
-    private async Task LoadAsync(bool jumpToFirst = true)
+    /// <returns>
+    /// Whether the week was actually re-read. False means the status line
+    /// already says why ("Could not load the schedule.") and the grid is still
+    /// showing whatever it held before — which is what the caller needs to know
+    /// before claiming the screen matches Panopto.
+    /// </returns>
+    private async Task<bool> LoadAsync(bool jumpToFirst = true)
     {
         string? prompt = null;
+        var loaded = false;
 
         IsBusy = true;
         try
@@ -1749,6 +1763,8 @@ public sealed class CalendarViewModel : ObservableObject
 
             Detail = $"{shown} in view this week"
                    + (unplaced > 0 ? $" · {unplaced} with no usable time" : "");
+
+            loaded = true;
         }
         catch (PanoptoRequestException ex) when (ex.Status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
@@ -1776,6 +1792,8 @@ public sealed class CalendarViewModel : ObservableObject
         }
 
         if (prompt is not null) await RequestSignInAsync(prompt);
+
+        return loaded;
     }
 
     private void JumpToFirstSessionWeek()
@@ -2495,7 +2513,6 @@ public sealed class SessionBlockViewModel : ObservableObject
     public TimeSpan Duration =>
         Session.EffectiveDuration ?? CalendarLayout.DefaultDuration;
 
-    /// <summary>
     /// <summary>
     /// Whether dragging this block can do anything.
     ///

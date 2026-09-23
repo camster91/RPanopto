@@ -93,12 +93,9 @@ public partial class MainWindow : Window
 
 #if DEBUG
     /// <summary>
-    /// Draws <see cref="DebugFixtureWeek"/> instead of loading a real week. Only
-    /// reachable from a development build started with <c>--self-test-week</c>.
-    /// </summary>
-    /// <summary>
     /// True when this window draws <see cref="DebugFixtureWeek"/> and touches no
-    /// network.
+    /// network — only reachable from a development build started with
+    /// <c>--self-test-week</c>.
     ///
     /// <para>Read by <c>App</c> so the title can say what the window is. A fixture
     /// is fully interactive and can never write — it makes no request, so it is

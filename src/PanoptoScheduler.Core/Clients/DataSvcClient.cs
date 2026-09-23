@@ -153,9 +153,12 @@ public sealed class DataSvcClient(
         var results = payload?.D?.Results ?? [];
 
         // TotalNumber is the count of the whole set, not of this page. A server
-        // that omits it reports 0, which would read as "already complete", so
-        // fall back to the page's own length and let the other guards decide.
-        var total = payload?.D?.TotalNumber is > 0 ? payload.D.TotalNumber : results.Count;
+        // that omits it reports 0, which would read as "already complete".
+        // Falling back to the page's own length would be worse: the walk would
+        // stop after this page with no error, so only trust a positive count
+        // and otherwise leave the walk open — the no-new-ids and page-ceiling
+        // guards are what decide then.
+        var total = payload?.D?.TotalNumber is > 0 ? payload.D.TotalNumber : int.MaxValue;
 
         return (results, total);
     }

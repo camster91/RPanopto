@@ -59,14 +59,10 @@ public sealed class AsyncRelayCommand(Func<Task> execute, Func<bool>? canExecute
             // nobody can report.
             AppLog.Error("A command failed without handling its own error.", ex);
 
-            MessageBox.Show(
-                "That operation failed unexpectedly, so it did not run.\n\n"
-                + $"A log of what happened was written to:\n{AppLog.Directory}\n\n"
-                + "Please send that file on, along with what you were doing at the time.\n\n"
-                + $"({ex.GetType().Name}: {ex.Message})",
-                "Panopto Scheduler",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+            FailureDialog.Show(
+                "That operation failed unexpectedly, so it did not run.",
+                ex,
+                "Panopto Scheduler");
         }
         finally
         {

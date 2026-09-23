@@ -692,6 +692,35 @@ public sealed class BulkEditViewModel : ObservableObject
             // either way, and what is missing is the record of them.
             if (report.AuditWarning is { } trail) Detail = $"{Detail} {trail}";
         }
+        catch (OperationCanceledException ex) when (ProblemText.IsTimeout(ex))
+        {
+            // Not the operator's stop, though it arrives as the same exception
+            // type: Panopto stopped answering mid-run. The clean-up is the same
+            // as a real stop — the run is over either way and nothing stays
+            // armed — but it must not be *reported* as a stop, because the two
+            // are different events: every row already sent may or may not have
+            // landed, and an operator told "stopped by you" would press the
+            // button again believing nothing had happened. Logged as a fault,
+            // not as information, for the same reason.
+            RevokePreview();
+            if (!dryRun) _selectionConsumed();
+
+            AppLog.Error(
+                $"Bulk {op} {(dryRun ? "preview" : "run")} timed out at "
+                + $"{_progressDone} of {_progressTotal}.", ex);
+
+            Status = dryRun
+                ? $"Preview timed out at {_progressDone} of {_progressTotal}."
+                : $"Panopto stopped answering at {_progressDone} of {_progressTotal}.";
+
+            Detail = dryRun
+                ? "Nothing was written. Preview again when Panopto answers."
+                : $"{_progressDone} session(s) went through before Panopto stopped"
+                  + " answering, and the one in flight may or may not have landed —"
+                  + " refresh to see where things stand. Running it again is safe:"
+                  + " every operation here sets an end state, and setting the same"
+                  + " one twice leaves the same result.";
+        }
         catch (OperationCanceledException)
         {
             // A stopped run is a partial one, so whatever armed it is spent. For a

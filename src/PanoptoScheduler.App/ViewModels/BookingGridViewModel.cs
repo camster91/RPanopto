@@ -611,6 +611,56 @@ public sealed class BookingGridViewModel : ObservableObject
             // alternative is an operator believing a log exists that does not.
             if (report.AuditWarning is { } trail) Detail = $"{Detail} {trail}";
         }
+        catch (OperationCanceledException ex) when (ProblemText.IsTimeout(ex))
+        {
+            // Not the operator's stop, though it arrives as the same exception
+            // type: Panopto stopped answering mid-run. Reported as a fault, and
+            // the remaining rows are not cleared the way a deliberate stop
+            // clears them, because for booking the two events differ in one
+            // load-bearing way. A stop is checked between rows, so nothing was
+            // in flight and "none of the rest went" is true; a timeout leaves
+            // the row that was in flight with its fate unknown — it may exist
+            // in the tenant without ever being reported to `completed`, and
+            // booking it again would create a second recording.
+            _previewed = false;
+
+            AppLog.Error(
+                $"Booking {(dryRun ? "preview" : "run")} timed out after "
+                + $"{completed.Count} of {rows.Count} row(s).", ex);
+
+            if (dryRun)
+            {
+                Status = $"Preview timed out after {completed.Count} of {rows.Count} row(s).";
+                Detail = "Nothing was written. Booking stays locked until a preview has"
+                       + " seen these rows through.";
+            }
+            else
+            {
+                // The rows that reported going are removed exactly as a
+                // completed run removes them, so pressing Book again cannot
+                // re-book anything known to exist.
+                var spent = completed
+                    .Where(o => o.Kind is ScheduleOutcomeKind.Scheduled or ScheduleOutcomeKind.Conflict)
+                    .Select(o => owners.GetValueOrDefault(o.Line))
+                    .Where(r => r is not null)
+                    .ToList();
+
+                foreach (var row in spent) Rows.Remove(row!);
+
+                Renumber();
+
+                Status = $"Panopto stopped answering. {spent.Count} recording(s) had"
+                       + " already been created.";
+
+                Detail = Rows.Count == 0
+                    ? "Every row in the grid had gone, so there is nothing left to book."
+                    : $"{Rows.Count} row(s) are left, and one of them — the row that was in"
+                      + " flight when Panopto stopped answering — may have been created"
+                      + " without being reported. Check the tenant before booking it again:"
+                      + " a second attempt at that row is a second recording, not the same"
+                      + " one again.";
+            }
+        }
         catch (OperationCanceledException)
         {
             // The preview is spent: the rows are not the rows it described, because

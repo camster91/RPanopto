@@ -158,28 +158,16 @@ public sealed class BulkSessionEditor(
     }
 
     /// <summary>
-    /// One operation's rows on their way to the trail.
+    /// Feeds one operation's rows to the trail as they complete, as a cursor
+    /// rather than a row.
     ///
-    /// <para><b>A cursor, not a row.</b> The chunked operations add a hundred
-    /// results in one <c>AddRange</c>, so a signature taking the row just finished
-    /// would leave those hundred unrecorded — and the hundred-row chunk is the batch
-    /// that most needs a trail. This records every row the operation has added since
-    /// the last call, whatever size that batch was, and a repeated call for the same
-    /// list writes nothing a second time.</para>
-    ///
-    /// <para>All it adds to <see cref="BulkAuditRun"/> is that cursor, which is why
-    /// it is nested here: the run identity and the shortfall sentence are shared with
-    /// the booking path, and only the stepping through a growing result list is
-    /// particular to this type.</para>
-    /// </summary>
-    /// <summary>
-    /// Feeds one operation's rows to the trail as they complete.
-    ///
-    /// <para><b>Every call must be handed the same list, still growing.</b> That is
-    /// what the cursor assumes: the chunked operations <c>AddRange</c> into a single
-    /// list and report it after each chunk, so counting rows already seen is the
-    /// only way to record all hundred of an <c>AddRange</c> without recording any
-    /// of them twice.</para>
+    /// <para><b>Every call must be handed the same list, still growing.</b> The
+    /// chunked operations add a hundred results in one <c>AddRange</c> and
+    /// report the list after each chunk, so a signature taking the row just
+    /// finished would leave those hundred unrecorded — and the hundred-row chunk
+    /// is the batch that most needs a trail. Counting rows already seen is the
+    /// only way to record all hundred without recording any of them twice, and
+    /// a repeated call for the same list writes nothing a second time.</para>
     ///
     /// <para>The one way to get this wrong is to call it with a <i>second</i> list.
     /// The counter has already moved past that list's rows, so the loop would begin
@@ -187,6 +175,11 @@ public sealed class BulkSessionEditor(
     /// failure a trail exists to rule out. Nothing does that today: the operations
     /// that finish early do so before the first report. Anything added later must
     /// keep it that way, or hand over rows through the same list.</para>
+    ///
+    /// <para>All it adds to <see cref="BulkAuditRun"/> is that cursor, which is why
+    /// it is nested here: the run identity and the shortfall sentence are shared with
+    /// the booking path, and only the stepping through a growing result list is
+    /// particular to this type.</para>
     /// </summary>
     private sealed class Audit(IBulkAuditLog log, string operation, bool dryRun)
     {

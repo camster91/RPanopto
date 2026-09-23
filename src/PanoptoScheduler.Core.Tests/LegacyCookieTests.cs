@@ -1,7 +1,10 @@
 using System.Net;
 using System.Text;
 using System.Xml.Linq;
+using PanoptoScheduler.Core;
+using PanoptoScheduler.Core.Auth;
 using PanoptoScheduler.Core.Clients;
+using PanoptoScheduler.Core.Configuration;
 using PanoptoScheduler.Core.RateLimiting;
 
 namespace PanoptoScheduler.Core.Tests;
@@ -256,21 +259,19 @@ public class LegacyCookieTests
     }
 
     /// <summary>
-    /// Signing out has to drop the cookie from <b>both</b> places it is cached: it
-    /// authorises writes by itself, so a leftover copy would let the next person
-    /// to sign in act as the last — with their permissions and their name on the
-    /// record.
+    /// The client-level half: <c>InvalidateAuthCookie</c> has to drop the cookie
+    /// from <b>both</b> places it is cached, and the next call has to fetch a
+    /// fresh one.
     ///
-    /// <para><b>One call, and that is the point.</b> The provider holds a copy and
-    /// so does the client that actually sends it, so emptying either one alone
-    /// leaves the other to authenticate the next write. This drives the single
-    /// method <c>PanoptoConnection.SignOut</c> calls rather than emptying them by
-    /// hand. Emptying them by hand is what this test used to do — and it passed
-    /// while sign-out left the client's copy live, which it did, so it could not
-    /// fail on the defect it was written to catch.</para>
+    /// <para><b>This drives the method, not the sign-out.</b>
+    /// <c>PanoptoConnection.SignOut</c> calls
+    /// <c>PanoptoSoapClient.InvalidateAuthCookie</c>, and this test cannot tell
+    /// whether it still does — remove that call and this stays green. The
+    /// connection-level test below is the one that goes red if the wiring
+    /// breaks; this one pins the behaviour of the method it calls.</para>
     /// </summary>
     [Fact]
-    public async Task Signing_out_drops_the_cookie_from_both_caches()
+    public async Task Invalidating_the_cookie_empties_both_caches()
     {
         // Scripted with a second cookie, because signing out and back in is a
         // second exchange — without it the handler would replay its last step
@@ -299,6 +300,58 @@ public class LegacyCookieTests
         var calls = handler.Requests.Where(r => r.Path.Contains("RemoteRecorderManagement")).ToList();
         Assert.Equal(".ASPXAUTH=first", calls[0].Cookie);
         Assert.Equal(".ASPXAUTH=second", calls[1].Cookie);
+    }
+
+    /// <summary>
+    /// The production path itself: <see cref="PanoptoConnection.SignOut"/> has
+    /// to drop the cookie the client holds, the live session, and the saved
+    /// session — the cookie authenticates writes on its own, so any one of the
+    /// three surviving lets the next person to sign in on a shared machine act
+    /// as the person who left, with their permissions and their name on the
+    /// record.
+    ///
+    /// <para><b>Driven through the connection, and that is the point.</b> The
+    /// client-level test above cannot fail on a sign-out that stops calling the
+    /// client; this one goes red the moment the wiring does. The session is
+    /// seeded through a fake token store rather than a real sign-in, so the
+    /// exchange below runs exactly as it does in the app: the bearer goes out,
+    /// the cookie comes back, and both real copies land where the app keeps
+    /// them.</para>
+    /// </summary>
+    [Fact]
+    public async Task Signing_out_through_the_connection_drops_the_cookie_it_holds()
+    {
+        var handler = new ScriptedHandler(() => Cookie(".ASPXAUTH=first"), Ok);
+        var http = new HttpClient(handler) { BaseAddress = new Uri("https://rotman.ca.panopto.com") };
+
+        const string tenant = "https://rotman.ca.panopto.com";
+        const string client = "test-client";
+
+        var store = new FakeTokenStore();
+        store.Save(tenant, client, new TokenSet("test-token", "refresh", DateTimeOffset.UtcNow.AddHours(1)));
+
+        var connection = new PanoptoConnection(
+            new PanoptoCredentials { TenantUrl = tenant, ClientId = client, ClientSecret = "secret" },
+            store,
+            http: http);
+
+        Assert.True(connection.Restore());
+
+        await ListAsync(connection.Soap);
+        Assert.Equal(1, handler.CountOf("legacyLogin"));
+        Assert.Equal(".ASPXAUTH=first", connection.Soap.AuthCookie);
+
+        connection.SignOut();
+
+        // The cookie first: it is the credential that authenticates writes by
+        // itself, and this is the assertion that fails if SignOut stops
+        // dropping it.
+        Assert.Null(connection.Soap.AuthCookie);
+        Assert.False(connection.IsSignedIn);
+
+        // And the saved session went too, or the next launch would resume as
+        // the person who signed out.
+        Assert.Equal(1, store.Clears);
     }
 
     /// <summary>
