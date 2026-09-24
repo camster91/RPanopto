@@ -1,0 +1,57 @@
+# Builds the scheduler and runs its whole test suite on every push.
+#
+# What this is for: the fixes that matter most here have been the ones the
+# suite caught. The five highs of the September review all reproduced as a red
+# test, and every fix since has shipped with one. A run on the runner means a
+# red suite is seen the same hour it was pushed, not the next time someone
+# builds on their own machine - which is also the only other machine this
+# repository has ever been built on.
+#
+# Deliberately NOT done on the runner:
+#   * publish.ps1 - it stages the zip from src\package\ and expects to run
+#     beside defaults.json (the packaged client credentials). The client
+#     secret never belongs on a runner, and the zip is built by a signed
+#     release process anyway.
+#   * Code signing - the certificate thumbprint is a local secret on the
+#     publishing machine, not a repository secret.
+#
+# The root solution (PanoptoScheduleUploader.sln) is the legacy uploader and
+# is not built: it predates this app, is not part of it, and does not build
+# with the current SDK. The path below names src\PanoptoScheduler.sln
+# explicitly so a failure to find it is a loud error rather than a silent
+# build of nothing.
+
+name: build
+
+on:
+  push:
+    branches: [modern-app]
+  pull_request:
+    branches: [modern-app]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build
+        run: dotnet build src\PanoptoScheduler.sln -c Debug
+
+      - name: Test
+        run: dotnet test src\PanoptoScheduler.sln -c Debug --no-build --logger trx
+
+      - name: Keep the test results when they fail
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: src\**\TestResults\**\*.trx
+          if-no-files-found: ignore
