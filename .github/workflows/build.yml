@@ -28,6 +28,7 @@ on:
     branches: [modern-app]
   pull_request:
     branches: [modern-app]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
