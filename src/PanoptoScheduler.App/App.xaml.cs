@@ -6,6 +6,7 @@ using PanoptoScheduler.Core;
 using PanoptoScheduler.Core.Configuration;
 using PanoptoScheduler.Core.Diagnostics;
 using PanoptoScheduler.Core.Scheduling;
+using PanoptoScheduler.Core.Updates;
 
 namespace PanoptoScheduler.App;
 
@@ -190,6 +191,17 @@ public partial class App : Application
             window.UseDebugFixtureWithIncompleteRooms();
         }
 
+        // The fixture week with the update banner drawn, which is the only way
+        // to render it on a machine whose feed is current: the banner waits
+        // on a published version being newer than this one, and on a machine
+        // that is up to date it correctly shows nothing. The fixture names a
+        // made-up version so the banner and its link can be asserted.
+        if (e.Args.Contains("--self-test-update", StringComparer.OrdinalIgnoreCase))
+        {
+            AppLog.Info("Self-test update requested; no feed will be read.");
+            window.UseDebugFixtureWithUpdate();
+        }
+
         // Said in the title, not only in the status line, because a fixture window
         // is indistinguishable from a real one at a glance and can never write —
         // so an operator who finds one open works in it, watches every change fail,
@@ -280,6 +292,18 @@ public partial class App : Application
 
         window.Show();
 
+        // The update check runs only on a real window. A fixture touches no
+        // network by design, and this check is a network call; the guard is
+        // here rather than inside the check because "is this a fixture" is a
+        // question about the window, and it compiles away in Release builds,
+        // where fixtures do not exist.
+#if DEBUG
+        if (!window.IsFixture)
+#endif
+        {
+            _ = CheckForUpdateAsync(window);
+        }
+
         // A way to find out whether logging and crash reporting work on a
         // machine that is not this one. Diagnostics that have never been
         // exercised are the ones that turn out to be wrong exactly when someone
@@ -293,6 +317,44 @@ public partial class App : Application
                 throw new InvalidOperationException(
                     "Deliberate fault, raised by --self-test-crash to prove the crash "
                     + "handler writes a log. Nothing is wrong with the app.")));
+        }
+    }
+
+    /// <summary>
+    /// Asks the version feed whether a newer build has been published, and
+    /// puts the update banner up if there is one.
+    ///
+    /// <para><b>Nothing about this may interrupt an operator.</b> The check is
+    /// a courtesy about a version they already hold a working copy of:
+    /// <see cref="VersionFeed.TryReadAsync"/> is written to swallow its own
+    /// failures quietly, so reaching the catch here means something outside
+    /// it did — the dispatcher call, say — and even that must not take the
+    /// app down. That is the lesson of the review's async-void escapes,
+    /// applied to every fire-and-forget path since: the catch is not
+    /// decoration, it is the reason this method is safe to not await.</para>
+    /// </summary>
+    private static async Task CheckForUpdateAsync(MainWindow window)
+    {
+        try
+        {
+            var info = await VersionFeed.TryReadAsync().ConfigureAwait(false);
+
+            if (info is not null && VersionFeed.IsNewer(info.LatestVersion, Version))
+                window.Dispatcher.Invoke(() =>
+                {
+                    window.AnnounceUpdate(info.LatestVersion, Version);
+
+                    // The banner is a UI state, and this is the line that makes
+                    // it visible from outside the machine: an operator asking
+                    // "why does my copy say there is an update" is answered from
+                    // the log without a screen share. Logged after the banner
+                    // is up, so the line means "shown", not just "noticed".
+                    AppLog.Info($"An update is available: version {info.LatestVersion} (this copy is {Version}).");
+                });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"The update check could not finish: {ex.Message}");
         }
     }
 

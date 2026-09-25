@@ -207,6 +207,28 @@
                                Foreground="{StaticResource WarningText}" />
                 </Border>
 
+                <!-- A newer published version exists. Not a dialog, for the
+                     same reason the rooms note is not: there is no moment to
+                     interrupt — the operator's copy is the one they have, and
+                     it works. The link hands the rest to the browser, where
+                     the repository's own sign-in decides who may download. -->
+                <Border DockPanel.Dock="Top" Background="{StaticResource WarningBg}"
+                        BorderBrush="{StaticResource WarningBorder}" BorderThickness="1"
+                        CornerRadius="5" Padding="10,7" Margin="0,4,0,4"
+                        Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVisible}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding UpdateNotice}" TextWrapping="Wrap"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource WarningText}" />
+                        <TextBlock VerticalAlignment="Center" Margin="6,0,0,0">
+                            <Hyperlink Command="{Binding GetUpdateCommand}"
+                                       ToolTip="Opens GitHub in your browser. You need to be signed in there as a repository member.">
+                                Get the update
+                            </Hyperlink>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
                 <!-- The rooms. Wrapped, and capped so a 400-room tenant does not
                      push the calendar off the bottom of the window: past the cap
                      the list scrolls inside itself instead. -->

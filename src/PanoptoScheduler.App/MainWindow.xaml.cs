@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private bool _fixture;
     private bool _fixtureOpensPanel;
     private bool _fixtureRoomsIncomplete;
+    private bool _fixtureUpdateAvailable;
 #endif
 
     private SessionBlockViewModel? _dragging;
@@ -71,6 +72,7 @@ public partial class MainWindow : Window
             if (_fixture)
             {
                 if (_fixtureRoomsIncomplete) _viewModel.UseIncompleteRoomsFixture();
+                if (_fixtureUpdateAvailable) _viewModel.UseUpdateFixture();
 
                 _viewModel.LoadDebugFixture();
 
@@ -140,6 +142,30 @@ public partial class MainWindow : Window
         _fixture = true;
         _fixtureRoomsIncomplete = true;
     }
+
+    /// <summary>
+    /// The same fixture, with the update banner on, for
+    /// <c>--self-test-update</c>.
+    ///
+    /// <para>Like the rooms fixture, this exists because the state it draws
+    /// cannot otherwise be seen: the banner waits on a public version feed,
+    /// and on every machine whose feed is current it correctly shows nothing.
+    /// The fixture names a made-up version so the banner and its link are
+    /// rendered — and asserted — on demand.</para>
+    /// </summary>
+    public void UseDebugFixtureWithUpdate()
+    {
+        _fixture = true;
+        _fixtureUpdateAvailable = true;
+    }
+
+    /// <summary>
+    /// Draws the update banner, from <c>App</c>'s own startup check. A
+    /// forwarder rather than an exposed view model so the window stays the
+    /// only thing that decides what is on screen.
+    /// </summary>
+    public void AnnounceUpdate(string latest, string installed)
+        => _viewModel.AnnounceUpdate(latest, installed);
 
     /// <summary>
     /// Reports the fitted geometry once the grid has been laid out, and says

@@ -230,6 +230,17 @@ public sealed class CalendarViewModel : ObservableObject
     /// to stop.</para>
     /// </summary>
     private bool _fixtureRoomsIncomplete;
+
+    /// <summary>
+    /// Makes the fixture week draw the update banner with a made-up version.
+    ///
+    /// <para>Set only by <c>--self-test-update</c>, for the same reason as the
+    /// rooms fixture: the banner is driven by a public version feed, so a
+    /// machine whose feed is current draws nothing — and the one state the
+    /// banner exists for would be the one state never rendered. This makes it
+    /// renderable, and the fixture asserts on it.</para>
+    /// </summary>
+    private bool _fixtureUpdateAvailable;
 #endif
 
     /// <summary>
@@ -255,6 +266,7 @@ public sealed class CalendarViewModel : ObservableObject
     private string _detailTooltip = "";
     private bool _isSignedIn;
     private bool _isBusy;
+    private string _updateNotice = "";
 
     public CalendarViewModel(PanoptoConnection panopto)
     {
@@ -292,6 +304,7 @@ public sealed class CalendarViewModel : ObservableObject
 
         ClearRoomFilterCommand = new RelayCommand(() => FilterToRoom(""), () => IsRoomFiltered);
         ReloadRoomsCommand = new AsyncRelayCommand(ReloadRoomsAsync, () => IsSignedIn && !IsBusy);
+        GetUpdateCommand = new RelayCommand(OpenReleasesPage);
 
         Rebuild();
     }
@@ -1058,6 +1071,15 @@ public sealed class CalendarViewModel : ObservableObject
     public AsyncRelayCommand ReloadRoomsCommand { get; }
 
     /// <summary>
+    /// Opens the repository's releases page in the browser, from the update
+    /// banner. The browser carries the authentication: the repository is
+    /// private, so the page shows for a signed-in member and nothing else —
+    /// which is exactly the no-secrets-in-the-app bargain the update check
+    /// was designed around.
+    /// </summary>
+    public RelayCommand GetUpdateCommand { get; }
+
+    /// <summary>
     /// Puts a sentence on the status line from outside this class.
     ///
     /// <para>Exists so the window can report the outcomes only it can observe —
@@ -1112,6 +1134,57 @@ public sealed class CalendarViewModel : ObservableObject
     {
         get => _detailTooltip;
         private set => Set(ref _detailTooltip, value);
+    }
+
+    /// <summary>
+    /// The sentence the update banner carries, or empty when there is no
+    /// banner. The notice <i>is</i> the banner: <see cref="UpdateAvailable"/>
+    /// is derived from it rather than tracked beside it, so the two cannot
+    /// disagree about whether an update is on screen.
+    /// </summary>
+    public string UpdateNotice
+    {
+        get => _updateNotice;
+        private set
+        {
+            if (!Set(ref _updateNotice, value)) return;
+            Raise(nameof(UpdateAvailable));
+        }
+    }
+
+    /// <summary>Whether the update banner is on screen.</summary>
+    public bool UpdateAvailable => UpdateNotice.Length > 0;
+
+    /// <summary>
+    /// Announces a newer version, called by <c>App</c> once the version feed
+    /// has answered.
+    ///
+    /// <para>The banner is the whole of the update experience, by design. The
+    /// check is a courtesy and must never interrupt an operator, and the
+    /// download is the browser's business — the repository is private, so the
+    /// person's own signed-in GitHub session is the authentication, and the
+    /// app carries no token that could read anything.</para>
+    /// </summary>
+    public void AnnounceUpdate(string latest, string installed)
+        => UpdateNotice =
+            $"Version {latest} is available — this copy is {installed}. Get it from GitHub.";
+
+    /// <summary>Where <see cref="GetUpdateCommand"/> goes. The page shows for a signed-in repository member.</summary>
+    private const string ReleasesUrl = "https://github.com/camster91/panopto-scheduler/releases/latest";
+
+    private void OpenReleasesPage()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(ReleasesUrl) { UseShellExecute = true });
+        }
+        catch
+        {
+            // No browser, or it was blocked — the same fallback as the sign-in
+            // URL: the address goes on screen instead, and the banner stays up.
+            Detail = $"Get the update from {ReleasesUrl}";
+            Status = "Could not open a browser.";
+        }
     }
 
     public bool IsSignedIn
@@ -1362,6 +1435,18 @@ public sealed class CalendarViewModel : ObservableObject
     public void UseIncompleteRoomsFixture() => _fixtureRoomsIncomplete = true;
 
     /// <summary>
+    /// Draws the fixture week with the update banner on, for
+    /// <c>--self-test-update</c>.
+    ///
+    /// <para>The banner is driven by a public version feed, and a feed that is
+    /// current correctly draws nothing — so on every machine that has one, the
+    /// state the banner exists for is the one state never rendered. The
+    /// fixture names a made-up version so the banner can be asserted rather
+    /// than eyeballed.</para>
+    /// </summary>
+    public void UseUpdateFixture() => _fixtureUpdateAvailable = true;
+
+    /// <summary>
     /// Draws a week of made-up sessions and makes no request to Panopto. See
     /// <see cref="DebugFixtureWeek"/>; the status line says which week this is,
     /// so a window opened this way cannot be read as a real schedule.
@@ -1440,6 +1525,34 @@ public sealed class CalendarViewModel : ObservableObject
                 $"Self-test rooms: the incomplete-room banner is wrong for a "
                 + $"{(_fixtureRoomsIncomplete ? "truncated" : "complete")} listing — "
                 + $"header \"{RoomHeader}\", shows={RoomsIncomplete}, note \"{RoomsIncompleteNote}\".");
+        }
+
+        // The update banner is announced here rather than left to a real feed:
+        // a fixture makes no requests by design, so no feed ever answers, and
+        // the banner would be the one fixture state never rendered. The
+        // version pair is made up on purpose — the assertion is about the
+        // banner, not about whatever is currently published.
+        if (_fixtureUpdateAvailable)
+            AnnounceUpdate("2.0.0", "1.3.1");
+
+        var updateOk = _fixtureUpdateAvailable
+            ? UpdateAvailable && UpdateNotice.Contains("2.0.0", StringComparison.Ordinal)
+                && GetUpdateCommand is not null
+            : !UpdateAvailable && UpdateNotice.Length == 0;
+
+        if (updateOk)
+        {
+            AppLog.Info(
+                _fixtureUpdateAvailable
+                    ? $"Self-test update: banner shown — \"{UpdateNotice}\""
+                    : "Self-test update: no banner for the current version.");
+        }
+        else
+        {
+            AppLog.Warn(
+                $"Self-test update: the banner is wrong for a "
+                + $"{(_fixtureUpdateAvailable ? "newer" : "current")} version — "
+                + $"shows={UpdateAvailable}, notice \"{UpdateNotice}\".");
         }
 
         CheckDetailsFixture();
