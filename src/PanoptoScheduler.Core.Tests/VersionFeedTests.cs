@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using PanoptoScheduler.Core.Updates;
 
 namespace PanoptoScheduler.Core.Tests;
@@ -29,11 +30,22 @@ public class VersionFeedTests
     }
 
     /// <summary>
-    /// Serves exactly one request on a loopback listener and shuts down.
+    /// Serves exactly one request on a loopback socket and shuts down.
     /// The feed is read once per call, so one response is all a test needs.
     /// Synchronous on purpose: the serving happens on a background task, so
     /// there is nothing here to await — an <c>async</c> signature would be
     /// CS1998 with a return type pretending to be a wait.
+    ///
+    /// <para><b>Raw sockets, not <see cref="HttpListener"/>.</b> The listener's
+    /// "localhost" prefix is served by http.sys, and http.sys is the one layer
+    /// in this suite that a machine can disagree with: the same build served
+    /// 200s on a workstation and connections the CI runner could not make.
+    /// The failure hid, too — every test that expects <see langword="null"/>
+    /// also passes when the server is simply not there, so the whole suite
+    /// went red on one test that happened to expect a value. A socket bound
+    /// to 127.0.0.1 and a URL naming 127.0.0.1 leave nothing for name
+    /// resolution or URL ACLs to decide, which is why this is the shape the
+    /// other loopback suites in this project already use.</para>
     /// </summary>
     /// <param name="status">The status code to answer with.</param>
     /// <param name="body">The body to answer with.</param>
@@ -41,8 +53,7 @@ public class VersionFeedTests
     private static Uri ServeOnce(int status, string body)
     {
         var port = FreePort();
-        var listener = new HttpListener();
-        listener.Prefixes.Add($"http://localhost:{port}/");
+        var listener = new TcpListener(IPAddress.Loopback, port);
         listener.Start();
 
         // The response is written on a background task so the caller can
@@ -51,11 +62,34 @@ public class VersionFeedTests
         {
             try
             {
-                var context = await listener.GetContextAsync();
-                context.Response.StatusCode = status;
-                var bytes = System.Text.Encoding.UTF8.GetBytes(body);
-                await context.Response.OutputStream.WriteAsync(bytes);
-                context.Response.Close();
+                using var client = await listener.AcceptTcpClientAsync();
+                var stream = client.GetStream();
+
+                // The request is drained before the response is written,
+                // because closing a socket with unread bytes still in its
+                // buffer makes Windows send a reset, and a reset can beat
+                // the body to the client — a served 200 that reads as a
+                // connection failure on one timing and not another. A GET
+                // carries no body, so its end is the blank line that
+                // terminates the headers; reading past that would wait on
+                // a client that has nothing left to send.
+                var request = new StringBuilder();
+                var buffer = new byte[1024];
+                while (request.ToString().IndexOf("\r\n\r\n", StringComparison.Ordinal) < 0)
+                {
+                    var got = await stream.ReadAsync(buffer.AsMemory());
+                    if (got == 0) break;
+                    request.Append(Encoding.ASCII.GetString(buffer, 0, got));
+                }
+
+                var payload = Encoding.UTF8.GetBytes(body);
+                var head = Encoding.ASCII.GetBytes(
+                    $"HTTP/1.1 {status} {(status == 200 ? "OK" : "Not Found")}\r\n"
+                    + "Content-Type: application/json\r\n"
+                    + $"Content-Length: {payload.Length}\r\n"
+                    + "Connection: close\r\n\r\n");
+                await stream.WriteAsync(head);
+                await stream.WriteAsync(payload);
             }
             catch (ObjectDisposedException)
             {
@@ -63,11 +97,11 @@ public class VersionFeedTests
             }
             finally
             {
-                listener.Close();
+                listener.Stop();
             }
         });
 
-        return new Uri($"http://localhost:{port}/version.json");
+        return new Uri($"http://127.0.0.1:{port}/version.json");
     }
 
     [Fact]
@@ -114,8 +148,10 @@ public class VersionFeedTests
     public async Task AFeedThatIsNotThereReadsAsNothing()
     {
         // A port that nothing is listening on: connection refused, which is
-        // the shape a rotten feed URL actually produces.
-        var feed = new Uri($"http://localhost:{FreePort()}/version.json");
+        // the shape a rotten feed URL actually produces. 127.0.0.1 for the
+        // same reason ServeOnce uses it: nothing for a machine's idea of
+        // "localhost" to decide.
+        var feed = new Uri($"http://127.0.0.1:{FreePort()}/version.json");
 
         Assert.Null(await VersionFeed.TryReadAsync(feed));
     }
