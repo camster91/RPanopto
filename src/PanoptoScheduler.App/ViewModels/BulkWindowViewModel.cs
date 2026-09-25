@@ -106,6 +106,28 @@ public sealed class BulkWindowViewModel : ObservableObject
     };
 
     /// <summary>
+    /// Whether one of the two long-running tools is mid-run. The import tab is
+    /// deliberately absent: reading a file writes nothing, and a window that
+    /// would not close over a file read would be a lock with no visible reason.
+    /// A booking or an edit run keeps writing to the tenant after this window
+    /// closes — it does not stop, it only loses its Stop button — which is the
+    /// state the window's Escape guard exists to refuse.
+    /// </summary>
+    public bool RunInProgress => Booking.Grid.IsBusy || Edit.IsBusy;
+
+    /// <summary>
+    /// Puts a message on the status line of whichever tool is running, which is
+    /// the line that run's own progress reports already arrive on. The window's
+    /// Escape guard is the caller: a refusal has to land where the operator is
+    /// already watching for signs of life, or it has not landed anywhere.
+    /// </summary>
+    public void AnnounceOnRun(string status, string detail)
+    {
+        if (Booking.Grid.IsBusy) Booking.Grid.Announce(status, detail);
+        else if (Edit.IsBusy) Edit.Announce(status, detail);
+    }
+
+    /// <summary>
     /// Called when the calendar's ticks change. The selection lives on the other
     /// view model, so the edit tab's commands have to be re-checked by hand —
     /// otherwise ticking a session leaves every button greyed out until the

@@ -52,9 +52,27 @@ public class VersionFeedTests
     /// <returns>The URL the feed was served at.</returns>
     private static Uri ServeOnce(int status, string body)
     {
-        var port = FreePort();
-        var listener = new TcpListener(IPAddress.Loopback, port);
-        listener.Start();
+        // FreePort hands back a number that was free a moment ago, and a
+        // parallel suite can claim it in the gap before this binds — a
+        // collision would fail a test whose subject is the feed, not the
+        // port. Retried with a fresh number rather than trusted, and bounded,
+        // because a fourth collision in a row would mean something other
+        // than the race is wrong and deserves the exception.
+        int port;
+        TcpListener listener;
+        for (var attempt = 0; ; attempt++)
+        {
+            port = FreePort();
+            listener = new TcpListener(IPAddress.Loopback, port);
+            try
+            {
+                listener.Start();
+                break;
+            }
+            catch (SocketException) when (attempt < 3)
+            {
+            }
+        }
 
         // The response is written on a background task so the caller can
         // await the feed read while this half is still holding the socket.
@@ -167,6 +185,22 @@ public class VersionFeedTests
     [Fact]
     public void ALowerVersionIsNotNewer()
         => Assert.False(VersionFeed.IsNewer("1.2.9", "1.3.1"));
+
+    /// <summary>
+    /// Version's own comparison treats a missing component as -1, so "1.4" is
+    /// below "1.4.0" as-written — but they are the same release, spelled two
+    /// ways, and a packager who normalizes the format mid-stream must not
+    /// banner every copy of the shorter spelling for an update it already has.
+    /// Either direction of the drift reads as "no update"; a real bump from
+    /// either still reads as an update.
+    /// </summary>
+    [Fact]
+    public void TheSameReleaseSpelledTwoWaysIsNotNewer()
+    {
+        Assert.False(VersionFeed.IsNewer("1.4.0", "1.4"));
+        Assert.False(VersionFeed.IsNewer("1.4", "1.4.0"));
+        Assert.True(VersionFeed.IsNewer("1.4.1", "1.4"));
+    }
 
     /// <summary>
     /// Whitespace is allowed on either side because the gist is edited by

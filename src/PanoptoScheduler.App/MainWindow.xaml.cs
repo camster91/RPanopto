@@ -560,6 +560,26 @@ public partial class MainWindow : Window
         _bulk?.Refresh();
     }
 
+    /// <summary>
+    /// Enter and Space open the details panel, because the click on a block
+    /// is the app's whole read path and until now there was no keyboard way to
+    /// take it: a Border is skipped by Tab unless it is made focusable, so a
+    /// keyboard-only operator could tick a recording for the bulk tools and
+    /// still never read one. Same call as the click takes, so the two paths
+    /// cannot disagree about what "open" means.
+    /// </summary>
+    private void Block_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Enter or Key.Space)) return;
+        if (sender is not FrameworkElement { DataContext: SessionBlockViewModel block }) return;
+
+        // The same "no id, no gesture" rule the mouse handler opens with.
+        if (block.SessionId is null) return;
+
+        _viewModel.SelectForDetails(block);
+        e.Handled = true;
+    }
+
     private void OpenBulk_Click(object sender, RoutedEventArgs e)
     {
         // Built once and reused, so switching tabs does not discard a preview or

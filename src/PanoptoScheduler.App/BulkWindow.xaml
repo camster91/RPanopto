@@ -4,7 +4,7 @@
         Title="Bulk actions — Panopto Scheduler" Height="720" Width="1080"
         MinHeight="420" MinWidth="760"
         Icon="pack://application:,,,/Assets/PanoptoScheduler.ico"
-        Background="{StaticResource WindowBg}" FontFamily="Segoe UI" FontSize="13"
+        Background="{StaticResource WindowBg}" Style="{StaticResource AppWindow}"
         WindowStartupLocation="CenterOwner">
 
     <Window.Resources>
@@ -53,7 +53,7 @@
                     <Expander DockPanel.Dock="Top" IsExpanded="True" Margin="0,0,0,10"
                               Header="Pattern — describe a repeat and add its rows to the grid">
                         <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource PanelBorder}"
-                                BorderThickness="1" CornerRadius="5" Padding="12,10" Margin="4,8,0,0">
+                                BorderThickness="1" CornerRadius="5" Padding="10,9" Margin="4,8,0,0">
                             <Grid DataContext="{Binding Pattern}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
@@ -171,18 +171,34 @@
                                         </ListBox.ItemTemplate>
                                     </ListBox>
 
-                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <!-- Wraps for the same reason the edit tab's
+                                         controls wrap: at the window's minimum width
+                                         this column holds ~150px and this row wants
+                                         ~360, so a horizontal panel pushed "Clear"
+                                         and "Reload rooms" past the window edge —
+                                         buttons there were unreachable rather than
+                                         merely cramped. Wrapped, the worst case is
+                                         four short rows. -->
+                                    <WrapPanel Margin="0,6,0,0">
+                                        <!-- A bottom margin on each button so a
+                                             wrapped row is separated from the one
+                                             under it; invisible while everything
+                                             fits on one line. -->
                                         <Button Content="Tick shown" Style="{StaticResource ActionButton}"
+                                                Margin="0,0,6,4"
                                                 Command="{Binding TickShownCommand}" />
                                         <Button Content="Untick shown" Style="{StaticResource ActionButton}"
+                                                Margin="0,0,6,4"
                                                 Command="{Binding UntickShownCommand}" />
                                         <Button Content="Clear" Style="{StaticResource ActionButton}"
+                                                Margin="0,0,6,4"
                                                 Command="{Binding ClearRoomsCommand}" />
                                         <Button Content="Reload rooms" Style="{StaticResource ActionButton}"
+                                                Margin="0,0,6,4"
                                                 Command="{Binding ReloadRoomsCommand}"
                                                 ToolTipService.ShowOnDisabled="True"
                                                 ToolTip="Re-reads the tenant's room list" />
-                                    </StackPanel>
+                                    </WrapPanel>
 
                                     <TextBlock Text="{Binding RoomSummary}" TextWrapping="Wrap"
                                                Foreground="{StaticResource Secondary}" FontSize="12"
@@ -280,7 +296,7 @@
                     <!-- The one place anything is booked. -->
                     <Border DockPanel.Dock="Bottom" Background="{StaticResource Surface}"
                             BorderBrush="{StaticResource PanelBorder}" BorderThickness="1"
-                            CornerRadius="5" Padding="10,8" Margin="0,10,0,0"
+                            CornerRadius="5" Padding="10,9" Margin="0,10,0,0"
                             DataContext="{Binding Grid}">
                         <DockPanel>
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
@@ -361,7 +377,8 @@
                                 <DataGridTextColumn Header="#" Binding="{Binding Line}" Width="45" />
                                 <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="*"
                                                     ElementStyle="{StaticResource CellText}" />
-                                <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="130" />
+                                <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="130"
+                                                    ElementStyle="{StaticResource CellText}" />
                                 <DataGridTextColumn Header="Detail" Binding="{Binding Message}" Width="2*"
                                                     ElementStyle="{StaticResource CellText}" />
                             </DataGrid.Columns>
@@ -403,11 +420,14 @@
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="Date" Width="100"
-                                                    Binding="{Binding Date, UpdateSourceTrigger=PropertyChanged}" />
+                                                    Binding="{Binding Date, UpdateSourceTrigger=PropertyChanged}"
+                                                    ElementStyle="{StaticResource CellText}" />
                                 <DataGridTextColumn Header="Start" Width="90"
-                                                    Binding="{Binding Start, UpdateSourceTrigger=PropertyChanged}" />
+                                                    Binding="{Binding Start, UpdateSourceTrigger=PropertyChanged}"
+                                                    ElementStyle="{StaticResource CellText}" />
                                 <DataGridTextColumn Header="End" Width="90"
-                                                    Binding="{Binding End, UpdateSourceTrigger=PropertyChanged}" />
+                                                    Binding="{Binding End, UpdateSourceTrigger=PropertyChanged}"
+                                                    ElementStyle="{StaticResource CellText}" />
                                 <DataGridTextColumn Header="Presenter" Width="120"
                                                     Binding="{Binding Presenter, UpdateSourceTrigger=PropertyChanged}"
                                                     ElementStyle="{StaticResource CellText}" />
@@ -495,8 +515,10 @@
                                                     ElementStyle="{StaticResource CellText}" />
                                 <DataGridTextColumn Header="Recorder" Binding="{Binding Recorder}" Width="110"
                                                     ElementStyle="{StaticResource CellText}" />
-                                <DataGridTextColumn Header="Starts" Binding="{Binding Starts}" Width="180" />
-                                <DataGridTextColumn Header="Ends" Binding="{Binding Ends}" Width="80" />
+                                <DataGridTextColumn Header="Starts" Binding="{Binding Starts}" Width="180"
+                                                    ElementStyle="{StaticResource CellText}" />
+                                <DataGridTextColumn Header="Ends" Binding="{Binding Ends}" Width="80"
+                                                    ElementStyle="{StaticResource CellText}" />
                                 <DataGridTextColumn Header="Presenter" Binding="{Binding Presenter}" Width="110"
                                                     ElementStyle="{StaticResource CellText}" />
                                 <DataGridTextColumn Header="Folder" Binding="{Binding Folder}" Width="120"
@@ -513,10 +535,18 @@
             <TabItem Header="Edit selected sessions" DataContext="{Binding Edit}">
                 <DockPanel Margin="4,10,4,0">
 
+                    <!-- Neutral on purpose: this is standing instruction, not a
+                         condition, and it never goes away. In this app's palette
+                         yellow means "something here needs attention before you
+                         continue" — the pattern's problems, the delete gate, the
+                         calendar's edit-note line — and a permanent yellow banner
+                         spends that meaning: an operator who stopped reading this
+                         one was an operator who would not read the next yellow
+                         thing either, the one that mattered. -->
                     <Border DockPanel.Dock="Top"
-                            Background="{StaticResource WarningBg}" BorderBrush="{StaticResource WarningBorder}" BorderThickness="1"
+                            Background="{StaticResource Surface}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1"
                             CornerRadius="5" Padding="10,8" Margin="0,0,0,10">
-                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource WarningText}"
+                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Secondary}"
                                    Text="Tick sessions on the calendar, then preview an operation. Each preview unlocks only the operation it previewed, and nothing is written until you press the matching blue button." />
                     </Border>
 
@@ -811,7 +841,8 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Session" Binding="{Binding Session}" Width="*"
                                                 ElementStyle="{StaticResource CellText}" />
-                            <DataGridTextColumn Header="Outcome" Binding="{Binding Outcome}" Width="120" />
+                            <DataGridTextColumn Header="Outcome" Binding="{Binding Outcome}" Width="120"
+                                                ElementStyle="{StaticResource CellText}" />
                             <DataGridTextColumn Header="Detail" Binding="{Binding Message}" Width="2*"
                                                 ElementStyle="{StaticResource CellText}" />
                         </DataGrid.Columns>

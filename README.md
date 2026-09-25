@@ -43,8 +43,13 @@ Uninstalling keeps your saved sign-in, templates and logs. Run
 
 ### If Windows or your antivirus warns about it
 
-The app is not code-signed. If SmartScreen shows "Windows protected your PC",
-choose **More info → Run anyway** — once per machine, not once per launch.
+The app is signed, but with the team's own certificate rather than one a
+certificate authority issued, so Windows does not know who vouches for it:
+SmartScreen shows "Windows protected your PC" until IT deploys the
+sidecar certificate (below). Choose **More info → Run anyway** — once per
+machine, not once per launch. The signature still proves something: a build
+whose files were tampered with after packaging fails the check, so
+"unknown publisher" is the honest reading, not "unverified file".
 
 If `Install.cmd` refuses to run at all, that is the script policy rather than the
 antivirus: a `.ps1` that arrived inside a zip carries the Mark of the Web, and a
@@ -64,33 +69,46 @@ is written for them: what the executable is, every host it contacts, why it
 opens a local port while you sign in, exactly what the installer writes, and
 what it writes to disk.
 
-### When you get a code-signing certificate
+### Code signing
 
-That is the only thing that removes the SmartScreen warning, and it is a
-purchase rather than a code change:
+The executable, `install.ps1` and `uninstall.ps1` are signed during packaging —
+there is no separate signing step to remember:
 
-1. Buy either an **OV** certificate (cheaper; the warning persists until the
-   download builds reputation, which takes weeks) or an **EV** one (immediate
-   reputation, higher cost, and issued on a hardware token).
-2. Sign from inside the publish script, not after it. `publish.ps1` publishes
-   and zips in one run and deletes the publish folder at the start of the
-   next, so a signature added after the script exits signs files nobody will
-   ever zip — the exe in the shipped zip stays unsigned. Give the script the
-   certificate's SHA-1 thumbprint and it signs the executable and the two
-   scripts after staging them and before zipping, with `signtool` from the
-   Windows SDK:
+```powershell
+.\src\publish.ps1 -CertificateThumbprint <certificate-thumbprint>
+```
 
-   ```powershell
-   .\publish.ps1 -CertificateThumbprint <certificate-thumbprint>
-   ```
+Everything about this lives inside `publish.ps1`, and each piece is there for
+a reason that was learned rather than guessed:
 
-   The script adds an RFC 3161 timestamp with `/tr`; the timestamp matters:
-   without it the signature stops being valid the day the certificate expires,
-   and every installed copy starts warning again.
-3. `install.ps1` and `uninstall.ps1` are signed by the same run. `Install.cmd`
-   cannot be — batch files carry no signature — but SmartScreen does not prompt
-   for a `.cmd` the way it does for an unsigned `.exe`, so the executable is
-   the file that has to be signed.
+- **`Set-AuthenticodeSignature`, not `signtool`.** signtool ships with the
+  Windows SDK, not with Windows, and installing the SDK on the packaging
+  machine needs an administrator. `Set-AuthenticodeSignature` writes the same
+  Authenticode signature with the same hash and timestamp and ships with every
+  PowerShell.
+- **SHA-256, timestamped over RFC 3161.** Without the timestamp the signature
+  dies with the certificate and every installed copy starts warning again. The
+  timestamp server is reached over plain `http://` because PowerShell 7's
+  signing client fails its timestamp step over https ("The parameter is
+  incorrect") — and the timestamp token carries its own signature, so the
+  transport does not have to prove anything.
+- **Success is checked by reading the signature back**, not by `Status`: the
+  packaging machine does not trust its own self-signed certificate, so every
+  `Status` reading there is `NotTrusted` no matter how well the signing went.
+  The checkable facts are that the signature names the certificate and carries
+  a timestamp; trust is a property of the machines the zip reaches.
+- **The certificate is the team's own self-signed one.** A signature from it
+  proves integrity (tampered files fail) but not reputation — SmartScreen
+  keeps warning until the certificate is deployed to the machines, which is
+  what `PanoptoScheduler-CodeSigning.cer` and
+  `Code-signing-certificate-for-IT.txt` in the zip are for: the note tells IT
+  to put the `.cer` into Trusted Root and Trusted Publishers, and the warnings
+  stop.
+- **If a CA-issued certificate is ever bought** (OV: cheaper, reputation builds
+  over weeks; EV: immediate reputation, hardware token), it slots into the same
+  `-CertificateThumbprint` flag and everything above keeps working. `Install.cmd`
+  itself stays unsigned — batch files carry no signature — but SmartScreen does
+  not prompt for a `.cmd` the way it does for an unsigned `.exe`.
 
 ---
 
@@ -201,26 +219,70 @@ refuses to zip it if a `.pdb` has appeared. Always ship the zip.
 
 1. Bump `<Version>` in `src\PanoptoScheduler.App\PanoptoScheduler.App.csproj`.
    That one string is the package name, the title bar and the log line; the two
-   lines under it are not bumped with it.
-2. Run `src\publish.ps1` and let it finish without throwing. It asserts the
-   publish is self-contained and pdb-free before it zips, so a run that completes
-   **is** the check that the result will start on a machine with no .NET runtime.
-3. Tag it on the commit you shipped, and release:
+   lines under it are not bumped with it. Use the three-part form (`1.4.0`):
+   `release.ps1` refuses anything else, because a format change part-way
+   through the app's life would show every copy of the old spelling an update
+   it already has.
+2. Build the signed package and let it finish without throwing:
 
    ```powershell
-   git tag v1.3.1
-   git push camster91 modern-app --tags
-   gh release create v1.3.1 --repo camster91/panopto-scheduler `
-       --title v1.3.1 --notes "<what changed>"
+   .\src\publish.ps1 -CertificateThumbprint <certificate-thumbprint>
    ```
+
+   It asserts the publish is self-contained and pdb-free before it zips, so a
+   run that completes **is** the check that the result will start on a machine
+   with no .NET runtime — and that the signature is in the zip, since signing
+   happens inside the same run.
+3. Ship it:
+
+   ```powershell
+   .\src\release.ps1 -Version <version>
+   ```
+
+   `release.ps1` creates the GitHub release on `camster91/panopto-scheduler`
+   (the tag, the zip, the code-signing `.cer` and the IT note) and then points
+   the public version gist at the new number — that order is load-bearing: the
+   banner every running copy shows links to a Releases page that already
+   holds the download. Running copies notice on their next start, because the
+   update check reads the gist on every launch.
+
+   If a run half-finished — the release exists but the gist was not bumped —
+   the script says so and re-running it resumes at the gist step; the error
+   names the one `gh gist edit` command that finishes the job by hand.
+
+**The release page is the download.** The banner in the app opens the
+repository's Releases page in the browser, and the browser's own GitHub
+sign-in decides who may download: the repository is private, so the zip is
+reachable by the team and nobody else. That is the design, and it is why the
+zip can ship there at all — `defaults.json` carries the shared OAuth client
+secret, which is exactly what keeps the repository (and the fork that would
+come with making it public) permanently off the table. A team member who gets
+the banner but a 404 from the page is not a collaborator yet:
+
+```powershell
+gh api -X PUT repos/camster91/panopto-scheduler/collaborators/<their-github-name> -F permission=pull
+```
 
 Release notes are where a version's changes go, not this file.
 
-**Do not attach the zip to a release.** It carries `defaults.json`, and so the
-shared OAuth client secret; an asset on a release is downloadable by everyone who
-can see the repository, and stays downloadable if the repository is ever made
-public or forked. The zip travels to the team directly. Anything that would make
-a release asset acceptable has to come with rotating the secret, not after it.
+### Known issues
+
+**The paging phantom.** Twice in September 2026 (the 18th and the 21st) a
+calendar load warned that a listing had stopped at the page ceiling holding
+about **15,000 items** — from a tenant with **nineteen recorders**, which
+cannot be that large. Something server-side was serving fresh-looking pages
+past the real end of the set. It was never root-caused, and it has not
+recurred since the walk learned to stop on its own terms: deduplicate items by
+identity, treat a page that adds nothing (or re-serves the first page) as the
+end, and refuse to report "complete" while the server still owes items
+(`src\PanoptoScheduler.Core\Clients\SoapPaging.cs`).
+
+If the warning comes back, read it as a serve-side anomaly first — the tenant
+is not this large. **Raising `SoapPaging.MaxPages` is the one response already
+tried** (20 → 60), and it tripled the phantom count instead of fixing it; the
+in-warning advice to "raise SoapPaging.MaxPages" is stale for exactly that
+reason. The honest signal to watch is whether the rooms or folders the tenant
+actually has all show up, not the item count on the warning line.
 
 ### Changing the tenant, or the client secret
 

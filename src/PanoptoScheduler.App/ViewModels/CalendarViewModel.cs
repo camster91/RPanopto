@@ -284,15 +284,10 @@ public sealed class CalendarViewModel : ObservableObject
             Status = "Waiting for sign-in in your browser…";
             Detail = "Complete the sign-in in the browser tab that just opened.";
 
-            try
-            {
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            }
-            catch
-            {
-                // No browser, or it was blocked. The URL is on screen instead.
-                Detail = "Could not open a browser. Open the link shown in this window.";
-            }
+            OpenInBrowser(
+                url,
+                "Could not open a browser.",
+                "Open the link shown in this window.");
         };
 
         SignInCommand = new AsyncRelayCommand(async () => await SignInAsync(), () => !IsSignedIn && !IsBusy);
@@ -1099,6 +1094,31 @@ public sealed class CalendarViewModel : ObservableObject
         Status = status;
     }
 
+    /// <summary>
+    /// Opens a URL in whatever browser the machine has, or reports the failure
+    /// with the address still on screen. Both external URLs this class opens —
+    /// the sign-in page and the release page — want the same fallback: no
+    /// browser, or one the policy blocked, is solved by an operator reading the
+    /// address, not by retrying a launch that would fail again.
+    /// </summary>
+    /// <param name="url">The page to open.</param>
+    /// <param name="failureStatus">The status line if no browser would open.</param>
+    /// <param name="failureDetail">
+    /// The detail line if no browser would open — the one to include the
+    /// address in, since it is what the operator must now type by hand.
+    /// </param>
+    private void OpenInBrowser(string url, string failureStatus, string failureDetail)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch
+        {
+            Report(failureStatus, failureDetail);
+        }
+    }
+
     public string Status
     {
         get => _status;
@@ -1169,23 +1189,23 @@ public sealed class CalendarViewModel : ObservableObject
         => UpdateNotice =
             $"Version {latest} is available — this copy is {installed}. Get it from GitHub.";
 
-    /// <summary>Where <see cref="GetUpdateCommand"/> goes. The page shows for a signed-in repository member.</summary>
+    /// <summary>
+    /// Where <see cref="GetUpdateCommand"/> goes. The page shows for a signed-in repository member.
+    ///
+    /// <para>The repository's name is written down in three places that cannot
+    /// share a constant — they live in different processes: release.ps1's
+    /// <c>$repo</c>, this URL, and the gist id inside <see cref="VersionFeed"/>'s
+    /// FeedUrl. Rename the repository and gh keeps working while every "Get the
+    /// update" click opens a 404, which is exactly how people learn to ignore
+    /// the banner. Change all three or none.</para>
+    /// </summary>
     private const string ReleasesUrl = "https://github.com/camster91/panopto-scheduler/releases/latest";
 
     private void OpenReleasesPage()
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo(ReleasesUrl) { UseShellExecute = true });
-        }
-        catch
-        {
-            // No browser, or it was blocked — the same fallback as the sign-in
-            // URL: the address goes on screen instead, and the banner stays up.
-            Detail = $"Get the update from {ReleasesUrl}";
-            Status = "Could not open a browser.";
-        }
-    }
+        => OpenInBrowser(
+            ReleasesUrl,
+            "Could not open a browser.",
+            $"Get the update from {ReleasesUrl}");
 
     public bool IsSignedIn
     {
@@ -1214,6 +1234,16 @@ public sealed class CalendarViewModel : ObservableObject
             NextWeekCommand.RaiseCanExecuteChanged();
             ThisWeekCommand.RaiseCanExecuteChanged();
             ReloadRoomsCommand.RaiseCanExecuteChanged();
+
+            // The panel's edit commands all answer CanEditSelection, which reads
+            // IsBusy — so without this raise, a load starting under an open
+            // details panel left Rename/Move/Retime with whatever enabled state
+            // they had before the load, and a press during it ran a write beside
+            // the load against the rate limiter they share. There is no
+            // CommandManager requery anywhere in this app (see RaiseEditCommands),
+            // so the raise nobody makes is the raise nobody gets.
+            RaiseEditCommands();
+            Raise(nameof(CanEditSelection));
         }
     }
 

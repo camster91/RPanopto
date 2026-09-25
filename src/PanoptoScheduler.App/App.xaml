@@ -93,6 +93,23 @@
              properties that have to be kept in agreement by hand. -->
         <conv:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisible" />
 
+        <!-- ==== Windows ==== -->
+
+        <!-- The font every window in the app carries. Each of the four windows
+             restated this pair on its own opening tag, which only looks
+             harmless: a font-size bump would have been four edits, and the
+             fifth window would have been the one that shipped at the old size.
+             Font values are inherited down the element tree, so setting them
+             once here is what every window was doing for itself.
+
+             Named and applied explicitly by each window, like everything else
+             in this file — a window that wants its own typography opts out
+             where the decision is visible, in its own opening tag. -->
+        <Style x:Key="AppWindow" TargetType="Window">
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+
         <!-- ==== Text ==== -->
         <Style x:Key="HeaderText" TargetType="TextBlock">
             <Setter Property="FontWeight" Value="SemiBold" />

@@ -414,6 +414,19 @@ public sealed class BulkEditViewModel : ObservableObject
     }
 
     /// <summary>
+    /// Sets the status line outright. The bulk window's Escape guard is the one
+    /// outside caller: it refuses to close over a run and needs to say so on
+    /// the line the run's own progress reports are arriving on. The setters stay
+    /// private because status here is the run's to narrate — this opens exactly
+    /// one door, for a message about the run itself.
+    /// </summary>
+    public void Announce(string status, string detail)
+    {
+        Status = status;
+        Detail = detail;
+    }
+
+    /// <summary>
     /// How many sessions the delete confirmation was given for. The window shows
     /// this number, so the operator is reading the count they agreed to rather
     /// than a count that has moved since.

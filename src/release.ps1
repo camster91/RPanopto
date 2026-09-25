@@ -49,6 +49,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# X.Y.Z and nothing else, enforced before anything is touched. A two-part
+# version ("1.4") is a different number to the app's comparison than its
+# three-part spelling ("1.4.0"), so a packager who normalized the format
+# mid-stream would banner every copy of the shorter spelling with an update
+# it already has. The app forgives the comparison anyway, but a gate here is
+# cheaper than the app being careful forever: this script is the only writer
+# of published version numbers, so the format never has to change.
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw @"
+Version '$Version' is not three components.
+
+Use the form X.Y.Z, like 1.4.0. The release tag, the zip name and the csproj
+all carry the version, and a format change partway through the app's life
+would show every copy of the old spelling an update it already has.
+"@
+}
+
 $src     = $MyInvocation.MyCommand.Path | Split-Path -Parent
 $appProj = Join-Path $src "PanoptoScheduler.App\PanoptoScheduler.App.csproj"
 $dist    = Join-Path $src "dist"
@@ -128,10 +145,21 @@ IT -- the note tells them where it goes.
 # Release first, gist second -- see the comment at the top of this file for
 # why the order looks backwards. gh creates the tag itself, at the head of
 # the default branch (modern-app), so there is no tag to push by hand.
-gh release create $tag -R $repo --title "Panopto Scheduler $Version" --notes $notes $zip $cer $itNote
-if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE -- nothing else was touched." }
-
-Write-Host "  Release $tag created with the zip, the certificate and the IT note."
+#
+# A release that already exists is a resume, not a failure: the one way to
+# get here is a previous run that created the release and then failed on the
+# gist update below, and the recovery for that is exactly this script's
+# second half. Refusing to re-enter would leave the packager with a half
+# ship that only hand-typed commands could finish -- the state this script
+# exists to prevent.
+$existing = gh release view $tag -R $repo --json name 2>$null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  Release $tag already exists -- finishing the half that did not ship last time (the gist)."
+} else {
+    gh release create $tag -R $repo --title "Panopto Scheduler $Version" --notes $notes $zip $cer $itNote
+    if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE -- nothing was released and nothing else was touched." }
+    Write-Host "  Release $tag created with the zip, the certificate and the IT note."
+}
 
 # The gist is edited by handing gh a file, because the alternative is typing
 # the JSON inline on a command line, and quoting is exactly the thing that
@@ -147,17 +175,39 @@ Write-Host "  Release $tag created with the zip, the certificate and the IT note
 # number. That is deliberate and fine -- an update check is a courtesy, and
 # "the banner appears within a few minutes of shipping" is the promise, not
 # "the moment release.ps1 returns".
+#
+# A failure here is the half-shipped state: the release is live and the gist
+# still names the previous version, so no running copy knows there is an
+# update. The throw names both facts and the one command that finishes the
+# job, and the temp file is deliberately kept -- the recovery command points
+# at it, and deleting the thing the message names would be the script
+# undoing its own instructions.
 $feedFile = Join-Path ([System.IO.Path]::GetTempPath()) "panopto-scheduler-version.json"
 [System.IO.File]::WriteAllText(
     $feedFile,
     '{ "version": "' + $Version + '" }',
     (New-Object System.Text.UTF8Encoding($false)))
 
+$gistUpdated = $false
 try {
     gh gist edit $gistId --filename "version.json" $feedFile
-    if ($LASTEXITCODE -ne 0) { throw "gh gist edit failed with exit code $LASTEXITCODE." }
+    if ($LASTEXITCODE -eq 0) { $gistUpdated = $true }
 } finally {
-    Remove-Item $feedFile -Force -ErrorAction SilentlyContinue
+    if ($gistUpdated) { Remove-Item $feedFile -Force -ErrorAction SilentlyContinue }
+}
+
+if (-not $gistUpdated) {
+    throw @"
+Release $tag is live, but the version gist still names the previous version,
+so no running copy knows the update exists yet. To finish the ship by hand,
+fix the cause first (an expired gh login is the usual one), then run:
+
+  gh gist edit $gistId --filename version.json $feedFile
+
+The file named above has been kept. Re-running this script instead would
+also work -- it resumes at this step -- but the one command above is all
+that is left to do.
+"@
 }
 
 Write-Host "  Version gist now says $Version -- every running copy will notice on its next start."

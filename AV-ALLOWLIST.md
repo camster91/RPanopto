@@ -18,7 +18,7 @@ a commodity loader:
 
 | Property | Why |
 |---|---|
-| **Unsigned** | No code-signing certificate. Nothing is wrong with the file; there is simply no signature to check. |
+| **Signed, but by an in-house certificate** | The executable, `install.ps1` and `uninstall.ps1` are signed during packaging (`publish.ps1 -CertificateThumbprint`, which calls `Set-AuthenticodeSignature` with SHA-256 and an RFC 3161 timestamp from `timestamp.digicert.com`). The certificate is the team's own self-signed one, so the signature is real but chains to nothing a machine already trusts: Windows still shows an unknown-publisher warning until IT deploys the sidecar `.cer` — it ships beside the zip in every release — to Trusted Root and Trusted Publishers, which is what the `Code-signing-certificate-for-IT.txt` note in the zip describes. |
 | **Ships the .NET runtime alongside it** | 396 files, ~135 MB unpacked, ~59 MB zipped. The `.exe` itself is 150 KB — the bulk is the runtime and framework assemblies, not application code. |
 | **`createdump.exe` in the folder** | A memory-dumping diagnostic that ships with the .NET runtime itself. It is not part of this app and is never invoked by it, but a file with that name and that capability is a reasonable thing for an engine to score. |
 | **Opens a listening socket** | `127.0.0.1:51820`, during sign-in only — see below. |
@@ -42,15 +42,19 @@ discovered. **Installing is optional**; see [The installer](#the-installer).
 
 ## What it contacts, and nothing else
 
-All traffic is outbound HTTPS on 443 to a single host:
+All traffic is outbound HTTPS on 443 to two hosts:
 
 | Destination | Purpose |
 |---|---|
 | `rotman.ca.panopto.com` | Sign-in (OAuth 2.0 authorization code with PKCE), the public SOAP API for writes, and Panopto's own internal `Data.svc` for reads |
+| `gist.githubusercontent.com` | The update check (`PanoptoScheduler.Core/Updates/VersionFeed.cs`): one GET of a public GitHub gist that holds the newest published version number, on every start. It reads one JSON string and sends nothing. |
 
-There is no telemetry, no analytics, no crash reporting, no update check, and no
-third-party service of any kind. The app never contacts a host that is not the
-configured tenant.
+There is no telemetry, no analytics, no crash reporting, and no third-party
+service of any kind. The update check is the one request that is not the tenant,
+and all it can ever learn or reveal is that some version of this app exists —
+which is the entire disclosure of the public gist it reads. Every failure of
+that request is silent by design: an operator about to book a recording is
+never shown a dialog about an update.
 
 Two things that look like other hosts in the source and are not: XML namespace
 identifiers (`schemas.datacontract.org`, `tempuri.org`, `w3.org`) are strings
@@ -149,7 +153,10 @@ Each of these was checked for in the source and is absent:
 - no Windows service, driver, or scheduled task
 - no registry writes **by the application**. The installer writes one HKCU key,
   and only if you choose to install — see [The installer](#the-installer).
-- no auto-update or self-modification
+- no self-modification and no self-applied update. The update check reads a
+  version number and, if the feed names a newer one, shows a banner whose link
+  opens the browser at the repository's Releases page — the download and the
+  upgrade happen by hand, in the browser, or not at all.
 - no downloaded code that is then executed
 - no filesystem scanning, enumeration, or exfiltration
 

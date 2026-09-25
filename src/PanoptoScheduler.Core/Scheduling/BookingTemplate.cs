@@ -29,6 +29,16 @@ public sealed record BookingTemplate
     /// </summary>
     public required string Name { get; init; }
 
+    /// <summary>
+    /// The name, and nothing else. A record's synthesized <c>ToString</c> lists
+    /// every property, and two of these are read-only collections — the first
+    /// thing that ever interpolated this record (the bulk self-test's verdict)
+    /// printed a line of runtime-collection noise where a person's pattern name
+    /// should have been. The name is what a template is called everywhere, so it
+    /// is what the record calls itself.
+    /// </summary>
+    public override string ToString() => Name;
+
     /// <inheritdoc cref="BookingPattern.Recorders"/>
     public IReadOnlyList<string> Recorders { get; init; } = [];
 

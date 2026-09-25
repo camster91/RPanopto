@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using PanoptoScheduler.App.ViewModels;
 using PanoptoScheduler.Core.Diagnostics;
+using PanoptoScheduler.Core.Layout;
 using PanoptoScheduler.Core.Scheduling;
 
 namespace PanoptoScheduler.App;
@@ -15,6 +16,14 @@ public partial class BulkWindow : Window
     public BulkWindow(BulkWindowViewModel viewModel)
     {
         InitializeComponent();
+
+        // The sizes in the XAML are what this window wants on a desktop with
+        // room to spare, and every one of them is scaled by the display's DPI:
+        // on a 1080p laptop at 150% the desktop is ~672 units tall and this
+        // window's 720 opens partly off the screen. The main window fits
+        // itself for exactly this reason; the arithmetic lives in WindowFit so
+        // it is tested, and this is only the applying of it.
+        ApplyFitToScreen();
 
         _viewModel = viewModel;
         DataContext = viewModel;
@@ -296,16 +305,55 @@ public partial class BulkWindow : Window
     /// and setting that on a non-modal window throws. The throw would reach the
     /// dispatcher handler, which closes the application — so the shortcut for
     /// "never mind" would have quit the program.</para>
+    ///
+    /// <para>Refused while a run is going, because closing this window would not
+    /// stop one: the view model is retained by the calendar window, so the run
+    /// keeps writing to the tenant with nothing on screen showing it going, let
+    /// alone offering its Stop button. The refusal is said on the status line of
+    /// the tab that is running — the line the run's own progress reports arrive
+    /// on — and the run's Stop button is the way to make Escape work again.</para>
     /// </summary>
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         if (e.Key == Key.Escape)
         {
             e.Handled = true;
+
+            if (_viewModel.RunInProgress)
+            {
+                _viewModel.AnnounceOnRun(
+                    "A run is still going — the window stays open while it does.",
+                    "Stop the run first, from the running tab, if you want it not to finish.");
+                return;
+            }
+
             Close();
             return;
         }
 
         base.OnPreviewKeyDown(e);
+    }
+
+    /// <summary>
+    /// Opens the window the size the desktop it lands on can actually hold, and
+    /// lets it be shrunk to fit if it still cannot — the same treatment the main
+    /// window gets, for the same reason: a window that opens taller than the
+    /// work area cannot be dragged by its title bar on some taskbar layouts, so
+    /// "just resize it" is not always available to say. The minimums go before
+    /// the size because WPF coerces a window up to its minimum, which would
+    /// otherwise undo the fit in the same frame it was applied.
+    /// </summary>
+    private void ApplyFitToScreen()
+    {
+        // Already in device-independent units, which is the unit these
+        // properties are in. Scaling it again would double-apply the DPI.
+        var work = SystemParameters.WorkArea;
+
+        var fit = WindowFit.Fit(work.Width, work.Height, Width, Height, MinWidth, MinHeight);
+
+        MinWidth = fit.MinWidth;
+        MinHeight = fit.MinHeight;
+        Width = fit.Width;
+        Height = fit.Height;
     }
 }

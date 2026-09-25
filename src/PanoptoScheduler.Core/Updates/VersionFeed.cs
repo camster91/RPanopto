@@ -95,12 +95,25 @@ public static class VersionFeed
 
     /// <summary>
     /// Whether <paramref name="latest"/> is ahead of <paramref name="current"/>,
-    /// comparing them the way <see cref="Version"/> does. Anything that does
-    /// not parse on either side answers false — a banner that shows for a
-    /// version nobody can name is worse than no banner.
+    /// comparing them the way <see cref="Version"/> does, with one correction:
+    /// a component <see cref="Version"/> never had reads as zero rather than
+    /// as -1, so "1.4" and "1.4.0" are the same version and not a banner. A
+    /// banner for a version the operator already has is worse than no banner,
+    /// and a format drift across releases — the packager writing 1.4 once and
+    /// 1.4.0 the next time — is exactly how it would happen. Anything that
+    /// does not parse on either side still answers false.
     /// </summary>
     public static bool IsNewer(string? latest, string? current)
         => Version.TryParse(latest?.Trim(), out var newest)
             && Version.TryParse(current?.Trim(), out var installed)
-            && newest > installed;
+            && WithImplicitZeroes(newest) > WithImplicitZeroes(installed);
+
+    /// <summary>
+    /// Fills the components <see cref="Version"/> reports as -1 with zeros, so
+    /// the comparison sees "1.4" as "1.4.0" instead of something one revision
+    /// below it.
+    /// </summary>
+    private static Version WithImplicitZeroes(Version version) =>
+        new(version.Major, version.Minor,
+            Math.Max(0, version.Build), Math.Max(0, version.Revision));
 }

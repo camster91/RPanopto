@@ -5,7 +5,7 @@
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False"
         Icon="pack://application:,,,/Assets/PanoptoScheduler.ico"
-        Background="{StaticResource WindowBg}" FontFamily="Segoe UI" FontSize="13">
+        Background="{StaticResource WindowBg}" Style="{StaticResource AppWindow}">
 
     <!-- No Window.Resources: BoolToVisible and the dialog button style are two of
          the four copies that used to be spread across the windows, and both are
