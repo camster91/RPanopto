@@ -49,6 +49,16 @@ jobs:
       - name: Test
         run: dotnet test src\PanoptoScheduler.sln -c Debug --no-build --logger trx
 
+      # The App project is referenced by no test project, and the suite above
+      # is the only thing that ever compiled it here - in Debug. A production
+      # method that landed inside an #if DEBUG block broke every Release build
+      # for a day while CI stayed green, because nothing anywhere built
+      # Release: not the suite (it skips unreferenced projects), not this
+      # workflow, not the packager until the next zip. Release is what ships;
+      # this step is the missing build of it.
+      - name: Build Release
+        run: dotnet build src\PanoptoScheduler.sln -c Release
+
       - name: Keep the test results when they fail
         if: failure()
         uses: actions/upload-artifact@v7
