@@ -233,33 +233,51 @@ Write-Host "  Added Install.cmd and its two scripts (per-user install, no admin)
 # for with "after publishing and before zipping": a window that did not exist,
 # because publishing and zipping happened in one uninterruptible run.
 if ($CertificateThumbprint) {
-    # signtool ships with the Windows SDK, not with Windows, and the SDK parks
-    # it one versioned folder deep -- so it is searched for rather than
-    # assumed on PATH, newest version first.
-    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match '\\x64\\' } |
-        Sort-Object FullName -Descending |
+    # Signed with PowerShell's own Set-AuthenticodeSignature rather than
+    # signtool: signtool ships with the Windows SDK, not with Windows, and
+    # installing the SDK on the packaging machine needs an administrator.
+    # Set-AuthenticodeSignature writes the same Authenticode signature with
+    # the same hash and timestamp and ships with every PowerShell, so the
+    # packaging machine needs nothing installed.
+    $signingCert = Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My |
+        Where-Object Thumbprint -eq $CertificateThumbprint |
         Select-Object -First 1
-    if (-not $signtool) {
+    if (-not $signingCert) {
         throw @"
-signtool.exe was not found under Windows Kits. It ships with the Windows SDK,
-not with Windows itself. Install the SDK and publish again -- the zip was
-deliberately not built from unsigned files when a signature was asked for.
+No certificate with thumbprint $CertificateThumbprint was found in the
+current user's or the machine's store. The zip was deliberately not built
+from unsigned files when a signature was asked for.
 "@
     }
 
-    # The /tr timestamp is not cosmetics: without it the signature stops being
-    # valid the day the certificate expires, and every installed copy starts
-    # warning again.
+    # The timestamp server is not cosmetics: without it the signature stops
+    # being valid the day the certificate expires, and every installed copy
+    # starts warning again. The URL is http on purpose: PowerShell 7's
+    # signing client cannot do its timestamp step over https (it fails with
+    # "The parameter is incorrect"), and the timestamp token carries its own
+    # signature, so the transport does not have to prove anything.
     $toSign = @(
         (Join-Path $publish $exeName),
         (Join-Path $publish "install.ps1"),
         (Join-Path $publish "uninstall.ps1")
     )
     foreach ($file in $toSign) {
-        & $signtool.FullName sign /sha1 $CertificateThumbprint /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 $file
-        if ($LASTEXITCODE -ne 0) {
-            throw "signtool failed (exit code $LASTEXITCODE) on $(Split-Path -Leaf $file) -- the zip was not built."
+        Set-AuthenticodeSignature -FilePath $file `
+            -Certificate $signingCert -HashAlg SHA256 `
+            -TimestampServer http://timestamp.digicert.com | Out-Null
+
+        # Success is decided by reading the signature back, not by Status:
+        # this machine does not trust its own self-signed certificate, so
+        # every Status reading on it is "UnknownError" or "NotTrusted" no
+        # matter how well the signing went. Trust is a property of the
+        # machines the zip reaches, not of this one. The checkable facts are
+        # that the signature names this certificate, and carries a timestamp.
+        $check = Get-AuthenticodeSignature -FilePath $file
+        if ($check.SignerCertificate.Thumbprint -ne $CertificateThumbprint) {
+            throw "Signing failed on $(Split-Path -Leaf $file): the signature does not name certificate $CertificateThumbprint -- the zip was not built."
+        }
+        if (-not $check.TimeStamperCertificate) {
+            throw "Signing failed on $(Split-Path -Leaf $file): no timestamp was added, so every copy would start warning again the day the certificate expires -- the zip was not built."
         }
     }
     Write-Host "  Signed $exeName, install.ps1 and uninstall.ps1."
