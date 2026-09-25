@@ -93,6 +93,21 @@ public partial class MainWindow : Window
         };
     }
 
+    /// <summary>
+    /// Draws the update banner, from <c>App</c>'s own startup check. A
+    /// forwarder rather than an exposed view model so the window stays the
+    /// only thing that decides what is on screen.
+    ///
+    /// <para>Deliberately outside the <c>#if DEBUG</c> region below it: that
+    /// block is the self-test fixtures, which are debug-only because only a
+    /// development build accepts <c>--self-test</c>, and this landed inside it
+    /// once — which made every Release build fail with CS1061 here, because
+    /// <c>App</c>'s update check is not debug-only and calls this in every
+    /// configuration.</para>
+    /// </summary>
+    public void AnnounceUpdate(string latest, string installed)
+        => _viewModel.AnnounceUpdate(latest, installed);
+
 #if DEBUG
     /// <summary>
     /// True when this window draws <see cref="DebugFixtureWeek"/> and touches no
@@ -158,14 +173,6 @@ public partial class MainWindow : Window
         _fixture = true;
         _fixtureUpdateAvailable = true;
     }
-
-    /// <summary>
-    /// Draws the update banner, from <c>App</c>'s own startup check. A
-    /// forwarder rather than an exposed view model so the window stays the
-    /// only thing that decides what is on screen.
-    /// </summary>
-    public void AnnounceUpdate(string latest, string installed)
-        => _viewModel.AnnounceUpdate(latest, installed);
 
     /// <summary>
     /// Reports the fitted geometry once the grid has been laid out, and says
