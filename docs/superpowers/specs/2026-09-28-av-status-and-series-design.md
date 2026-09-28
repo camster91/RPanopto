@@ -156,3 +156,38 @@ build + test.
   if it trips the EDR allowlist, fall back to an in-app banner only.
 - Caching makes the calendar up to 15 minutes old between refreshes; the age
   shown in the status line and rule 4 before writes contain that.
+
+## Amendments (2026-09-28, after approval, while planning)
+
+1. **Status needs no REST endpoint.** SOAP `ListRecorders` — already called by
+   the app — returns each recorder's `State` (the tenant spec's
+   `RemoteRecorderState`: Stopped, Previewing, Recording, Paused, Faulted,
+   Disconnected, RecorderRunning). One `ListRecorders` call per checkpoint
+   answers both "online?" and "recording?". `sessions/inProgress/recording`
+   is dropped from the build (its `Session` has no recorder field, so it could
+   not place a session in a room anyway); the Probe still prints it once for
+   the record. Mapping: Recording/Paused → Recording; Stopped, Previewing,
+   RecorderRunning → Idle (online); Disconnected, Faulted → Offline; anything
+   else → Unknown. *Late* = at start + 3 min, the session's recorder is not
+   Recording.
+2. **Cache patching is limited to what can be patched truthfully.** Time,
+   name, description, broadcast and delete are applied to the cached copy;
+   folder moves, change-room bookings (new ids are DeliveryIDs, not the
+   `Data.svc` SessionIDs) and *may have gone* results mark the cache stale.
+   Rule 4 ("re-read before a write run") applies to bulk series runs; single
+   edits rely on Panopto's own conflict report, as today.
+3. **Distribution is an office network share, not GitHub.** Office users
+   install from `\<share>\PanoptoScheduler\Install.cmd`; the app's update
+   check reads `latest.json` on that share (a file read — no API call) and
+   offers **Update now**, which re-runs the installer and relaunches. GitHub
+   releases remain the maintainer's archive; the public gist is retired.
+   No GitHub account is needed by any office user.
+4. **The self-signed certificate stays; no IT request.** The install guide
+   shows the one-time "More info → Run anyway". Files copied off the share by
+   `install.ps1` carry no Mark of the Web, so whether SmartScreen prompts at
+   all is measured on a colleague's machine in the acceptance task, not
+   assumed.
+5. **Any office user = any Panopto account.** The calendar shows what that
+   account can see; writes need the Panopto rights for that folder/recorder.
+   The app says so on first sign-in and in the README rather than failing
+   quietly.
