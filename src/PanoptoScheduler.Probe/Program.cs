@@ -165,6 +165,45 @@ internal static class Program
             return await DumpListingsAsync(recorderClient, sessionClient);
         }
 
+        if (args.Contains("--status-now"))
+        {
+            // One SOAP ListRecorders call: the State strings this app will map.
+            var statusNowRecorders = await recorderClient.ListRecordersAsync();
+            Console.WriteLine($"ListRecorders: {statusNowRecorders.Count} recorder(s), complete={statusNowRecorders.Complete}");
+            foreach (var r in statusNowRecorders.OrderBy(r => r.Name))
+                Console.WriteLine($"  {r.Name,-40} State={r.State ?? "(null)"}");
+
+            // One REST call, for the record only (Amendment 1): which ids it carries.
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/Panopto/api/v1/sessions/inProgress/recording");
+            await auth.ApplyAsync(request);
+            using var response = await http.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"inProgress/recording: {(int)response.StatusCode}");
+            Console.WriteLine(body.Length > 1500 ? body[..1500] + "…" : body);
+            return 0;
+        }
+
+        if (args.Contains("--current-schedule"))
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                "/Panopto/api/v1/scheduledRecordings/bulk/downloadResources/currentSchedule");
+            await auth.ApplyAsync(request);
+            using var response = await http.SendAsync(request);
+            Console.WriteLine($"currentSchedule: {(int)response.StatusCode} {response.Content.Headers.ContentType}");
+            var csv = await response.Content.ReadAsStringAsync();
+            var lines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            Console.WriteLine($"rows (incl. header): {lines.Length}");
+            foreach (var line in lines.Take(4)) Console.WriteLine("  " + line.TrimEnd('\r'));
+
+            var dataSvc = new DataSvcClient(http, limiters, auth);
+            var scheduled = await dataSvc.GetAllSessionsAsync([1]);
+            var ids = scheduled.SelectMany(s => new[] { s.SessionID, s.DeliveryID })
+                .Where(id => !string.IsNullOrEmpty(id)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var overlap = lines.Skip(1).Count(l => ids.Any(id => l.Contains(id!, StringComparison.OrdinalIgnoreCase)));
+            Console.WriteLine($"Data.svc scheduled: {scheduled.Count}; CSV rows containing a Data.svc id: {overlap}");
+            return 0;
+        }
+
         Console.WriteLine("── Candidate write paths (all read-only) ──");
 
         var recorders = await TryAsync(
@@ -422,6 +461,10 @@ internal static class Program
                                  with the JSON kinds it actually takes and a
                                  sample of each. For settling what a field is
                                  when a typed model refuses it.
+              --status-now       Read-only. One ListRecorders + one inProgress
+                                 read; prints states and ids.
+              --current-schedule Read-only. One currentSchedule.csv download;
+                                 prints columns and id overlap.
               --help             this.
 
             --verify-write exists because the time model's read side was settled by
