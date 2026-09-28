@@ -587,6 +587,15 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    /// <summary>Set once the main window is closing, so owned windows closing with it do not reload.</summary>
+    private bool _closing;
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        _closing = !e.Cancel;
+    }
+
     private void OpenBulk_Click(object sender, RoutedEventArgs e)
     {
         // Built once and reused, so switching tabs does not discard a preview or
@@ -601,8 +610,36 @@ public partial class MainWindow : Window
         }
 
         _bulkWindow = new BulkWindow(_bulk) { Owner = this };
-        _bulkWindow.Closed += (_, _) => _bulkWindow = null;
+        _bulkWindow.Closed += BulkWindow_Closed;
         _bulkWindow.Show();
+    }
+
+    /// <summary>
+    /// The bulk window writes through the connection, not through the calendar,
+    /// so the calendar's cache cannot know what it changed. Closing it marks the
+    /// cache stale and redraws — one read per bulk-window session, rather than
+    /// the bulk edits staying invisible until the cache ages out.
+    /// </summary>
+    private async void BulkWindow_Closed(object? sender, EventArgs e)
+    {
+        _bulkWindow = null;
+
+        // An owned window is closed by its owner's close too. A read started
+        // then would be spent on a calendar nobody will see.
+        if (_closing) return;
+
+        // Guarded because this is an async void event handler: an exception out
+        // of one reaches DispatcherUnhandledException, and that handler closes
+        // the app. The reload reports its own failures on the status line, so
+        // anything arriving here is one it did not expect.
+        try
+        {
+            await _viewModel.AfterExternalWritesAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("The calendar could not be refreshed after the bulk window closed.", ex);
+        }
     }
 
     private void Block_MouseMove(object sender, MouseEventArgs e)

@@ -884,6 +884,11 @@ public sealed class CalendarViewModel : ObservableObject
 
             if (result.Outcome == SessionEditOutcome.Failed)
             {
+                // Stale, not trusted: Core turns a SOAP fault into Failed, and a
+                // SOAP write can land and then fault — so "failed" does not prove
+                // the tenant is unchanged. The next action reads to find out.
+                _cache.MarkStale();
+
                 EditNote = result.Message + trail;
                 return;
             }
@@ -938,6 +943,11 @@ public sealed class CalendarViewModel : ObservableObject
         {
             // Never let this escape: AsyncRelayCommand.Execute is async void, so
             // an exception here ends the process rather than the operation.
+            //
+            // Whether the write reached Panopto is unknown from here, so the
+            // cache is marked stale rather than trusted.
+            _cache.MarkStale();
+
             EditNote = $"That did not go through: {ex.Message}";
         }
         finally
@@ -1069,6 +1079,28 @@ public sealed class CalendarViewModel : ObservableObject
     /// <para><see cref="LoadAsync"/> is told not to jump, so a rename does not
     /// move the operator off the week they are working in.</para>
     /// </summary>
+    /// <summary>
+    /// Tells the calendar that something outside it has written to the tenant —
+    /// the bulk window's edits, deletes, import and booking grid all write
+    /// through the connection and never touch this cache — and redraws.
+    ///
+    /// <para>Marks the cache stale and takes the same non-jumping reload an
+    /// edit takes, so the cost is one read, and only for a window that was
+    /// actually used. Skipped while signed out or mid-load: the cache stays
+    /// stale either way, so the next action reads instead.</para>
+    ///
+    /// <para>Reports its own failures through <see cref="LoadAsync"/>'s catch
+    /// blocks; a caller in an async void handler should still guard it.</para>
+    /// </summary>
+    public async Task AfterExternalWritesAsync()
+    {
+        _cache.MarkStale();
+
+        if (!IsSignedIn || IsBusy) return;
+
+        await ReloadSelectedAsync().ConfigureAwait(true);
+    }
+
     private async Task ReloadSelectedAsync()
     {
         var keep = _detailsSessionId;
@@ -1955,6 +1987,10 @@ public sealed class CalendarViewModel : ObservableObject
             Status = "Could not move the recording.";
             (Detail, DetailTooltip) = Problem.Describe("Could not move the recording.", ex);
 
+            // Unlike the refusal above, this is not a definite no: the write may
+            // have landed before the failure, so the next action reads.
+            _cache.MarkStale();
+
             // The grid still shows the old position, so it is consistent with
             // the server even though the operator's drag was refused.
             Rebuild();
@@ -1975,11 +2011,14 @@ public sealed class CalendarViewModel : ObservableObject
         // screen, with the details panel offering Rename/Move against blocks
         // the header does not describe. `from`, not the shifted value, is what
         // the screen is actually still holding.
+        //
+        // Not told to jump: the jump to the first booked week overwrote the
+        // week just chosen, so Next and Previous snapped straight back.
         var from = _weekStart;
         _weekStart = _weekStart.AddDays(days);
         Raise(nameof(WeekLabel));
 
-        if (!await LoadAsync())
+        if (!await LoadAsync(jumpToFirst: false))
         {
             _weekStart = from;
             Raise(nameof(WeekLabel));
@@ -1992,7 +2031,7 @@ public sealed class CalendarViewModel : ObservableObject
         _weekStart = StartOfWeek(RoomToday());
         Raise(nameof(WeekLabel));
 
-        if (!await LoadAsync())
+        if (!await LoadAsync(jumpToFirst: false))
         {
             _weekStart = from;
             Raise(nameof(WeekLabel));
@@ -2009,10 +2048,11 @@ public sealed class CalendarViewModel : ObservableObject
     /// </summary>
     /// <param name="jumpToFirst">
     /// Whether to move the view to the first week with anything in it. True for
-    /// every navigation and for sign-in, <b>false after an edit</b> — the
-    /// scheduled set runs months ahead, so a rename would otherwise yank the
-    /// operator off the week they were working in and onto the far end of the
-    /// calendar, which reads as the app having lost their place.
+    /// sign-in and Refresh; <b>false for the week buttons and after an edit</b> —
+    /// the scheduled set runs months ahead, so a jump would yank the operator off
+    /// the week they just chose or were working in and onto the first booked
+    /// week, which reads as the app having lost their place (and made Next,
+    /// Previous and This week snap straight back).
     /// </param>
     /// <param name="force">
     /// Read even when the cache is fresh: Refresh and sign-in (spec §0 rules 1
