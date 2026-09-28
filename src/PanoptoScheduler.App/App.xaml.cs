@@ -423,6 +423,18 @@ public partial class App : Application
     }
 #endif
 
+    /// <summary>
+    /// Writes the day's request count to the log as the last thing the process
+    /// does. "Very low API usage" is a requirement that only means anything if
+    /// it is measured, and the end of the run is the one moment guaranteed to
+    /// see every call this copy made today.
+    /// </summary>
+    protected override void OnExit(ExitEventArgs e)
+    {
+        AppLog.Info(ApiCallCounter.Shared.Summary());
+        base.OnExit(e);
+    }
+
     private static void ReportAndExit(Exception error)
     {
         AppLog.Error("Unhandled exception on the UI thread; closing.", error);

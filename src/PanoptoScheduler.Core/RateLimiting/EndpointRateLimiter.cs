@@ -1,3 +1,5 @@
+using PanoptoScheduler.Core.Diagnostics;
+
 namespace PanoptoScheduler.Core.RateLimiting;
 
 /// <summary>
@@ -25,15 +27,17 @@ public sealed class EndpointRateLimiter
     private readonly (int Limit, TimeSpan Window)[] _limits;
     private readonly Queue<DateTimeOffset>[] _hits;
     private readonly Lock _sync = new();
+    private readonly ApiCallCounter _counter;
 
     private DateTimeOffset _pausedUntil = DateTimeOffset.MinValue;
 
-    public EndpointRateLimiter(string endpoint, (int Limit, TimeSpan Window)[]? limits = null)
+    public EndpointRateLimiter(string endpoint, (int Limit, TimeSpan Window)[]? limits = null, ApiCallCounter? counter = null)
     {
         Endpoint = endpoint;
         _limits = limits ?? DefaultLimits;
         _hits = new Queue<DateTimeOffset>[_limits.Length];
         for (var i = 0; i < _hits.Length; i++) _hits[i] = new Queue<DateTimeOffset>();
+        _counter = counter ?? ApiCallCounter.Shared;
     }
 
     public string Endpoint { get; }
@@ -76,6 +80,7 @@ public sealed class EndpointRateLimiter
                     if (delay <= TimeSpan.Zero)
                     {
                         foreach (var window in _hits) window.Enqueue(now);
+                        _counter.Record(Endpoint);
                         return;
                     }
                 }

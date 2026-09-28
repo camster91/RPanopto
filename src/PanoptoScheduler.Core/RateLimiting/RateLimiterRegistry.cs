@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using PanoptoScheduler.Core.Diagnostics;
 
 namespace PanoptoScheduler.Core.RateLimiting;
 
@@ -15,12 +16,16 @@ public sealed class RateLimiterRegistry
         new(StringComparer.OrdinalIgnoreCase);
 
     private readonly (int Limit, TimeSpan Window)[] _limits;
+    private readonly ApiCallCounter? _counter;
 
-    public RateLimiterRegistry((int Limit, TimeSpan Window)[]? limits = null)
-        => _limits = limits ?? EndpointRateLimiter.DefaultLimits;
+    public RateLimiterRegistry((int Limit, TimeSpan Window)[]? limits = null, ApiCallCounter? counter = null)
+    {
+        _limits = limits ?? EndpointRateLimiter.DefaultLimits;
+        _counter = counter;
+    }
 
     public EndpointRateLimiter For(string endpoint)
-        => _limiters.GetOrAdd(endpoint, e => new EndpointRateLimiter(e, _limits));
+        => _limiters.GetOrAdd(endpoint, e => new EndpointRateLimiter(e, _limits, _counter));
 
     public IReadOnlyDictionary<string, EndpointRateLimiter> All => _limiters;
 }
