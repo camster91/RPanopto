@@ -188,7 +188,37 @@ public sealed class CalendarViewModel : ObservableObject
     private readonly TimeZoneInfo _roomZone;
 
     private DateOnly _weekStart;
-    private IReadOnlyList<PanoptoSession> _sessions = [];
+
+    /// <summary>
+    /// The scheduled set, read once and drawn from for every week.
+    ///
+    /// <para><c>Data.svc</c> ignores its date parameters, so a read is always the
+    /// whole tenant's schedule — re-reading it to show another week bought
+    /// nothing. It is replaced only on Refresh, on sign-in, on the first action
+    /// after it is fifteen minutes old, and before a bulk series run (spec §0);
+    /// a single edit patches it, and a write this app cannot mirror truthfully
+    /// marks it stale so the next action reads.</para>
+    ///
+    /// <para><see cref="ScheduleCache.Complete"/> is the old "did the read reach
+    /// the end" flag: a half-read week draws exactly like a quiet one, so it is
+    /// what lets the status line mark the count as partial.</para>
+    /// </summary>
+    private readonly ScheduleCache _cache = new();
+
+    /// <summary>The shared scheduled set, for the views that read alongside the calendar.</summary>
+    public ScheduleCache Cache => _cache;
+
+    /// <summary>
+    /// When the drawn schedule was read, so an operator can see how old the
+    /// grid is without a request being spent to find out.
+    ///
+    /// <para>On the rooms' clock, like every other time this class shows, and
+    /// never this machine's: a workstation set to another zone would otherwise
+    /// print an "as of" hours away from the grid it sits beside.</para>
+    /// </summary>
+    public string ScheduleAge => _cache.ReadAtUtc is { } at
+        ? $"Schedule as of {TimeZoneInfo.ConvertTimeFromUtc(at, _roomZone):h:mm tt}"
+        : "";
 
     /// <summary>
     /// Every room the tenant reports, independent of the week on screen.
@@ -206,14 +236,6 @@ public sealed class CalendarViewModel : ObservableObject
     /// do not display a caveat about a read that never happened.
     /// </summary>
     private bool _roomsComplete = true;
-
-    /// <summary>
-    /// Whether the last session read reached the end of the tenant's set. A
-    /// half-read week draws exactly like a quiet one, so the flag is what lets
-    /// the status line mark the count as partial — same reason
-    /// <see cref="_roomsComplete"/> exists for the room listing.
-    /// </summary>
-    private bool _sessionsComplete = true;
 
     /// <summary>How many recorders the last read returned, for the note's number.</summary>
     private int _roomsRead;
@@ -292,7 +314,9 @@ public sealed class CalendarViewModel : ObservableObject
 
         SignInCommand = new AsyncRelayCommand(async () => await SignInAsync(), () => !IsSignedIn && !IsBusy);
         SignOutCommand = new RelayCommand(SignOut, () => IsSignedIn && !IsBusy);
-        RefreshCommand = new AsyncRelayCommand(() => LoadAsync(), () => IsSignedIn && !IsBusy);
+        // Forced: Refresh is the operator asking for a read, which is the one
+        // thing the cache's age cannot answer for them (spec §0 rule 1).
+        RefreshCommand = new AsyncRelayCommand(() => LoadAsync(force: true), () => IsSignedIn && !IsBusy);
         PreviousWeekCommand = new AsyncRelayCommand(() => ShiftWeekAsync(-7), () => !IsBusy);
         NextWeekCommand = new AsyncRelayCommand(() => ShiftWeekAsync(7), () => !IsBusy);
         ThisWeekCommand = new AsyncRelayCommand(GoToThisWeekAsync, () => !IsBusy);
@@ -681,8 +705,17 @@ public sealed class CalendarViewModel : ObservableObject
     public bool CanEditSelection => IsSignedIn && SelectedBlock?.ReportsWritable == true && !IsBusy;
 
     public AsyncRelayCommand ApplyNameCommand => _applyName ??= new AsyncRelayCommand(
-        () => ApplyEditAsync("Renamed", () => _panopto.BulkEditing.RenameAsync(
-            [Target()], _ => EditName.Trim(), dryRun: false)),
+        () =>
+        {
+            // Taken once, so the name patched into the cache is the name sent —
+            // not whatever the box holds by the time the write returns.
+            var name = EditName.Trim();
+
+            return ApplyEditAsync(
+                "Renamed",
+                () => _panopto.BulkEditing.RenameAsync([Target()], _ => name, dryRun: false),
+                id => _cache.PatchName(id, name));
+        },
         () => CanEditSelection && EditName.Trim().Length > 0);
 
     private AsyncRelayCommand? _applyName;
@@ -696,8 +729,16 @@ public sealed class CalendarViewModel : ObservableObject
     /// the same either way; this just stops the press happening.</para>
     /// </summary>
     public AsyncRelayCommand ApplyDescriptionCommand => _applyDescription ??= new AsyncRelayCommand(
-        () => ApplyEditAsync("Set the description", () => _panopto.BulkEditing.SetDescriptionAsync(
-            [TargetWithDescription()], _ => EditDescription, dryRun: false)),
+        () =>
+        {
+            var description = EditDescription;
+
+            return ApplyEditAsync(
+                "Set the description",
+                () => _panopto.BulkEditing.SetDescriptionAsync(
+                    [TargetWithDescription()], _ => description, dryRun: false),
+                id => _cache.PatchDescription(id, description));
+        },
         () => CanEditSelection && SelectedBlock is not null
               && !string.Equals(EditDescription, SelectedBlock.Session.Description ?? string.Empty,
                                 StringComparison.Ordinal));
@@ -705,10 +746,15 @@ public sealed class CalendarViewModel : ObservableObject
     private AsyncRelayCommand? _applyDescription;
 
     public AsyncRelayCommand ApplyBroadcastCommand => _applyBroadcast ??= new AsyncRelayCommand(
-        () => ApplyEditAsync(
-            EditBroadcast ? "Turned webcasting on" : "Turned webcasting off",
-            () => _panopto.BulkEditing.SetBroadcastAsync(
-                [Target()], EditBroadcast, dryRun: false)),
+        () =>
+        {
+            var broadcast = EditBroadcast;
+
+            return ApplyEditAsync(
+                broadcast ? "Turned webcasting on" : "Turned webcasting off",
+                () => _panopto.BulkEditing.SetBroadcastAsync([Target()], broadcast, dryRun: false),
+                id => _cache.PatchBroadcast(id, broadcast));
+        },
         () => CanEditSelection && SelectedBlock is not null
               && SelectedBlock.Session.IsBroadcast != EditBroadcast);
 
@@ -719,9 +765,25 @@ public sealed class CalendarViewModel : ObservableObject
 
     private AsyncRelayCommand? _applyRetime;
 
+    /// <summary>
+    /// Moves the selected recording into a folder.
+    ///
+    /// <para><b>Marks the cache stale rather than patching it.</b> The folder
+    /// hint is resolved inside Core, so the folder the recording lands in is not
+    /// the string that went in, and a block redrawn from the hint would show the
+    /// operator a folder their recording is not in. Reading back is the only
+    /// version of that answer this app can be sure of, so the reload that
+    /// follows reads.</para>
+    /// </summary>
     public AsyncRelayCommand ApplyMoveCommand => _applyMove ??= new AsyncRelayCommand(
-        () => ApplyEditAsync("Moved", () => _panopto.BulkEditing.MoveAsync(
-            [Target()], EditFolder.Trim(), dryRun: false)),
+        () => ApplyEditAsync(
+            "Moved",
+            () => _panopto.BulkEditing.MoveAsync([Target()], EditFolder.Trim(), dryRun: false),
+            _ =>
+            {
+                _cache.MarkStale();
+                return true;
+            }),
         () => CanEditSelection && EditFolder.Trim().Length > 0);
 
     private AsyncRelayCommand? _applyMove;
@@ -782,7 +844,17 @@ public sealed class CalendarViewModel : ObservableObject
         yield return FindFoldersCommand;
     }
 
-    private async Task ApplyEditAsync(string did, Func<Task<BulkEditReport>> run)
+    /// <summary>
+    /// Runs one panel write and reports it.
+    /// </summary>
+    /// <param name="patch">
+    /// Mirrors a write that landed into <see cref="_cache"/>, given the id Core
+    /// reported. Returns false when the session is not in the cache, which then
+    /// marks it stale rather than leaving a grid that silently disagrees with
+    /// the tenant. A write this app cannot mirror (a folder move) marks it stale
+    /// itself.
+    /// </param>
+    private async Task ApplyEditAsync(string did, Func<Task<BulkEditReport>> run, Func<Guid, bool> patch)
     {
         if (SelectedBlock is null) return;
 
@@ -824,6 +896,11 @@ public sealed class CalendarViewModel : ObservableObject
             // operator's eye landed on it.
             var note = $"{did}.{trail}";
 
+            // The write landed, so the cache learns it before the redraw. A patch
+            // that finds nothing to change means the cache no longer holds this
+            // session, and only a read can say where it is now.
+            if (!patch(result.SessionId)) _cache.MarkStale();
+
             // The read comes first and the report second, because the read sets
             // the status line itself ("219 scheduled session(s)…") and would
             // otherwise overwrite what just happened with a count of the week.
@@ -848,6 +925,11 @@ public sealed class CalendarViewModel : ObservableObject
             //
             // Said plainly rather than as "try again", because for this
             // operation a second attempt is a second change to the tenant.
+            //
+            // The cache cannot say either, so it is marked stale: the next
+            // action reads rather than drawing what may no longer be true.
+            _cache.MarkStale();
+
             EditNote = "Panopto did not answer in time. The change may or may not "
                      + "have gone through — reopen the recording to check before "
                      + "pressing that again.";
@@ -927,7 +1009,10 @@ public sealed class CalendarViewModel : ObservableObject
             return _panopto.BulkEditing.RetimeAsync(
                 [new SessionRetime(block.SessionId!.Value, block.Title, startsAt, endsAt)],
                 dryRun: false);
-        }).ConfigureAwait(true);
+        },
+        // The same wall clocks that were sent, so the block redraws where the
+        // room now has it — the drag path mirrors its move the same way.
+        id => _cache.PatchTime(id, startsAt, endsAt - startsAt)).ConfigureAwait(true);
 
         if (readAs.Length > 0) EditNote = readAs + EditNote;
     }
@@ -968,18 +1053,18 @@ public sealed class CalendarViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Re-reads the week so the panel and the calendar show what the tenant now
+    /// Redraws the week so the panel and the calendar show what the tenant now
     /// holds, and re-seeds the fields from it.
     ///
-    /// <para><b>A read after a write, which is normally the thing not to do.</b>
-    /// It is worth it here for two reasons. It is one request: the read asks for
-    /// the scheduled set, which on this tenant is a single page. And the
-    /// alternative — patching the session in place — works for a name, a
-    /// description and a time, but <b>not</b> for a move: the folder hint is
-    /// resolved inside Core, so the folder that comes back is not the string that
-    /// went in, and a block redrawn from the hint would show the operator a folder
-    /// their recording is not in. Reading back is the only version of that answer
-    /// this app can be sure of.</para>
+    /// <para><b>Reads only when the cache says it must.</b> The write's caller
+    /// has already patched the cache — which works for a name, a description,
+    /// a webcast flag and a time — so the redraw is free. It does <b>not</b>
+    /// work for a move: the folder hint is resolved inside Core, so the folder
+    /// that comes back is not the string that went in, and a block redrawn from
+    /// the hint would show the operator a folder their recording is not in. A
+    /// move therefore marks the cache stale, and this read is what answers it.
+    /// Reading back is the only version of that answer this app can be sure
+    /// of.</para>
     ///
     /// <para><see cref="LoadAsync"/> is told not to jump, so a rename does not
     /// move the operator off the week they are working in.</para>
@@ -1407,7 +1492,10 @@ public sealed class CalendarViewModel : ObservableObject
 
         IsSignedIn = true;
         Status = "Restoring your saved session…";
-        await LoadAsync();
+
+        // Forced: a sign-in is a new session, and whatever the cache held
+        // belongs to the one before it (spec §0 rule 2).
+        await LoadAsync(force: true);
     }
 
     /// <summary>
@@ -1436,7 +1524,7 @@ public sealed class CalendarViewModel : ObservableObject
             IsSignedIn = true;
             signedIn = true;
             Status = "Signed in.";
-            await LoadAsync();
+            await LoadAsync(force: true);
 
             // Only surfaced after loading, so a storage problem never hides the
             // fact that the schedule itself came back fine.
@@ -1485,7 +1573,13 @@ public sealed class CalendarViewModel : ObservableObject
     {
         var today = RoomToday();
         _weekStart = StartOfWeek(today);
-        _sessions = DebugFixtureWeek.Sessions(today);
+        _cache.Replace(new PagedResult<PanoptoSession>(DebugFixtureWeek.Sessions(today), complete: true));
+
+        // Stale at once, so the fixture is never a cache anything navigates
+        // from: a week button still goes to Panopto — and, with nobody signed
+        // in, fails and rolls back exactly as it did before there was a cache —
+        // rather than drawing made-up sessions under a real-looking count.
+        _cache.MarkStale();
 
         // Including the rooms with nothing booked, so the legend's "exists but is
         // not on screen" state is drawable without a tenant. This does not make
@@ -1682,10 +1776,10 @@ public sealed class CalendarViewModel : ObservableObject
     {
         _panopto.SignOut();
 
-        _sessions = [];
-        // Vacuously complete: nothing is shown, so there is no half-read set
-        // for the status line to warn about.
-        _sessionsComplete = true;
+        // Emptied, not just marked stale: the next account must not see this
+        // one's schedule, even for the moment before its first read lands.
+        _cache.Clear();
+        Raise(nameof(ScheduleAge));
         IsSignedIn = false;
         Rebuild();
 
@@ -1777,7 +1871,11 @@ public sealed class CalendarViewModel : ObservableObject
             // wrapped in a DateTimeOffset stamped with this machine's offset so
             // that reading it back would undo the stamp — the block then moved
             // with the workstation rather than with the room.
-            block.Session.ApplyReschedule(start, block.Duration);
+            //
+            // Through the cache, which holds the same session object the block
+            // draws from. A session the cache no longer holds means it was
+            // replaced under the drag, and only a read can place it now.
+            if (!_cache.PatchTime(id, start, block.Duration)) _cache.MarkStale();
 
             Rebuild();
 
@@ -1799,7 +1897,9 @@ public sealed class CalendarViewModel : ObservableObject
             // Not rethrown, and it used to be — which is how a drag that timed
             // out closed the app. The block was snapped back before the call and
             // the local model was never updated, so the grid cannot be showing
-            // the answer: only a read can say whether the move landed.
+            // the answer: only a read can say whether the move landed. Marked
+            // stale first, or the reload would draw the cache and call it read.
+            _cache.MarkStale();
             var reloaded = await LoadAsync(jumpToFirst: false).ConfigureAwait(true);
 
             Status = "Panopto did not answer in time.";
@@ -1900,7 +2000,12 @@ public sealed class CalendarViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Reads the week and redraws it.
+    /// Makes sure the cache is current — reading only when it must — and redraws
+    /// the week from it.
+    ///
+    /// <para>A week button with a fresh cache makes no request at all: the
+    /// read is the whole tenant's schedule whichever week is on screen, so the
+    /// week is drawn from what is already held.</para>
     /// </summary>
     /// <param name="jumpToFirst">
     /// Whether to move the view to the first week with anything in it. True for
@@ -1909,13 +2014,19 @@ public sealed class CalendarViewModel : ObservableObject
     /// operator off the week they were working in and onto the far end of the
     /// calendar, which reads as the app having lost their place.
     /// </param>
+    /// <param name="force">
+    /// Read even when the cache is fresh: Refresh and sign-in (spec §0 rules 1
+    /// and 2). A caller that needs a read after a write of unknown fate marks
+    /// the cache stale instead, which has the same effect.
+    /// </param>
     /// <returns>
-    /// Whether the week was actually re-read. False means the status line
+    /// Whether the week was drawn from a current cache — freshly read, or read
+    /// recently enough and not marked stale since. False means the status line
     /// already says why ("Could not load the schedule.") and the grid is still
     /// showing whatever it held before — which is what the caller needs to know
     /// before claiming the screen matches Panopto.
     /// </returns>
-    private async Task<bool> LoadAsync(bool jumpToFirst = true)
+    private async Task<bool> LoadAsync(bool jumpToFirst = true, bool force = false)
     {
         string? prompt = null;
         var loaded = false;
@@ -1924,15 +2035,12 @@ public sealed class CalendarViewModel : ObservableObject
         try
         {
             Status = "Loading schedule…";
-            // Every page. A single request returns a clamped slice, which draws
-            // as a complete calendar with sessions quietly absent from it.
-            // The completeness flag is consumed here because the drawn grid
+            // The completeness flag is consumed below because the drawn grid
             // cannot say it on its own: a week that is missing rows looks
             // exactly like a quiet one, and the status line is the only place
             // that can tell the operator which one they are looking at.
-            var sessionsResult = await _panopto.Reads.GetAllSessionsAsync([1]);
-            _sessions = sessionsResult.Items;
-            _sessionsComplete = sessionsResult.Complete;
+            await EnsureFreshAsync(force);
+            var sessions = _cache.Sessions;
 
             // Before the repaint, so the first legend the operator sees is the
             // whole inventory rather than this week's rooms completing a beat
@@ -1949,11 +2057,11 @@ public sealed class CalendarViewModel : ObservableObject
 
             // A session's real time lives in StartTime; ScheduledStartTime is
             // null on every scheduled row. PanoptoScheduler.Core handles that.
-            var unplaced = _sessions.Count(s => s.EffectiveStart is null);
+            var unplaced = sessions.Count(s => s.EffectiveStart is null);
 
             // The scheduled set runs months ahead, so land on the first week
             // that actually has something rather than showing an empty grid.
-            if (jumpToFirst && _sessions.Any(s => s.EffectiveStart is not null))
+            if (jumpToFirst && sessions.Any(s => s.EffectiveStart is not null))
                 JumpToFirstSessionWeek();
 
             Rebuild();
@@ -1963,11 +2071,11 @@ public sealed class CalendarViewModel : ObservableObject
             // Through the palette's own filter, which drops the blanks. Counting
             // Distinct() over the nullable names made every unassigned session
             // one more room, so the line over-reported the building by one.
-            var rooms = RecorderPalette.Names(_sessions.Select(s => s.RemoteRecorderName)).Count;
+            var rooms = RecorderPalette.Names(sessions.Select(s => s.RemoteRecorderName)).Count;
 
-            Status = $"{_sessions.Count} scheduled session(s) at {rooms} recorder(s)."
+            Status = $"{sessions.Count} scheduled session(s) at {rooms} recorder(s)."
                    + (IsRoomFiltered ? $" Filtered to {_roomFilter}." : "")
-                   + (_sessionsComplete
+                   + (_cache.Complete
                        ? ""
                        : " The session listing stopped short — this count may be missing rows.")
                    + (roomsRead
@@ -2009,9 +2117,31 @@ public sealed class CalendarViewModel : ObservableObject
         return loaded;
     }
 
+    /// <summary>
+    /// Reads the scheduled set only when the cache says it must (spec §0 rules 1–4).
+    ///
+    /// <para>Every page. A single request returns a clamped slice, which draws as
+    /// a complete calendar with sessions quietly absent from it; the walk's
+    /// completeness flag lands in <see cref="ScheduleCache.Complete"/> for the
+    /// status line to report.</para>
+    ///
+    /// <para>Throws what the read throws. <see cref="LoadAsync"/>'s catch blocks
+    /// are the ones that turn that into a status line and a sign-in prompt, and
+    /// a caller outside it owns that job itself.</para>
+    /// </summary>
+    /// <param name="force">Refresh, sign-in, and the pre-run read of a bulk series run.</param>
+    public async Task<bool> EnsureFreshAsync(bool force = false)
+    {
+        if (!force && !_cache.NeedsRead) return true;
+        var read = await _panopto.Reads.GetAllSessionsAsync([1]);
+        _cache.Replace(read);
+        Raise(nameof(ScheduleAge));
+        return true;
+    }
+
     private void JumpToFirstSessionWeek()
     {
-        var first = _sessions
+        var first = _cache.Sessions
             .Select(s => s.EffectiveStart)
             .Where(s => s is not null)
             // The room's own day, straight off the wall clock. Reading it through
@@ -2131,7 +2261,7 @@ public sealed class CalendarViewModel : ObservableObject
     /// The sessions the grid draws: the whole week, or one room's share of it.
     /// </summary>
     private IEnumerable<PanoptoSession> VisibleSessions() =>
-        IsRoomFiltered ? _sessions.Where(s => IsRoom(s, _roomFilter)) : _sessions;
+        IsRoomFiltered ? _cache.Sessions.Where(s => IsRoom(s, _roomFilter)) : _cache.Sessions;
 
     private static bool IsRoom(PanoptoSession session, string room) =>
         string.Equals(session.RemoteRecorderName ?? "", room, StringComparison.OrdinalIgnoreCase);
@@ -2326,13 +2456,13 @@ public sealed class CalendarViewModel : ObservableObject
         _recorderBrushes.Clear();
 
         var assigned = RecorderPalette.Assign(
-            _sessions.Select(session => session.RemoteRecorderName ?? ""));
+            _cache.Sessions.Select(session => session.RemoteRecorderName ?? ""));
 
         // Names(), not the dictionary's own enumeration: this is the order the
         // colours were handed out, and the legend reads in the same order so a
         // row's stripe is the stripe on its blocks.
         foreach (var recorder in RecorderPalette.Names(
-                     _sessions.Select(session => session.RemoteRecorderName ?? "")))
+                     _cache.Sessions.Select(session => session.RemoteRecorderName ?? "")))
         {
             var brush = new SolidColorBrush(
                 Color.FromRgb(assigned[recorder].R, assigned[recorder].G, assigned[recorder].B));
@@ -2353,7 +2483,7 @@ public sealed class CalendarViewModel : ObservableObject
     /// </summary>
     private void BuildLegend()
     {
-        _inventory = RoomInventory.Build(_tenantRooms, _sessions.Select(s => s.RemoteRecorderName));
+        _inventory = RoomInventory.Build(_tenantRooms, _cache.Sessions.Select(s => s.RemoteRecorderName));
 
         var searching = _roomSearch.Trim().Length > 0;
         var rows = new List<RecorderLegendViewModel>(Legend.Count);

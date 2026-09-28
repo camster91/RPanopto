@@ -158,10 +158,19 @@
                              have. Without the cap a long status rendered at full
                              length and drew left over the week buttons, which
                              is exactly the moment statuses get long. -->
-                        <TextBlock Text="{Binding Status}" HorizontalAlignment="Right"
-                                   FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                   MaxWidth="520"
-                                   ToolTip="{Binding Status}" />
+                        <!-- The schedule's age sits beside the status so an
+                             operator can see how old the grid is: the calendar
+                             draws from a cached read now, and a week button no
+                             longer reads anything. Empty until the first read. -->
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <TextBlock Text="{Binding ScheduleAge}" Margin="0,0,12,0"
+                                       Foreground="{StaticResource Secondary}"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding Status}"
+                                       FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                       MaxWidth="520"
+                                       ToolTip="{Binding Status}" />
+                        </StackPanel>
                         <!-- Detail is one plain sentence now, and the tooltip is
                              the whole exception chain behind it. They used to be
                              the same string, which meant an operator who wanted
