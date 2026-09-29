@@ -2506,7 +2506,7 @@ Update the script's header comment to describe share-not-gist, and drop the gist
 
 - [ ] **Step 1: Ask the user for the share path** (e.g. `\\rotman-fs\AV\PanoptoScheduler`) and confirm every office user can read it and the maintainer can write it. Add `"updateShare": "<that path>"` to the maintainer's `credentials.json` — the user edits it (the file holds the client secret; do not print it).
 - [ ] **Step 2: Bump version** to 1.4.0 / 1.4.0.0 / 1.4.0.0. Full build + full suite (`*> src\test-results.log`) → `Passed!`, 0 failed; record the count.
-- [ ] **Step 3: Push the branch** `git push camster91 modern-app`; confirm the CI run for the head commit is green (`gh run list -R camster91/panopto-scheduler -L 1`).
+- [ ] **Step 3: Push the branch** `git push camster91 modern-app`; confirm the CI run for the head commit is green (`gh run list -R camster91/panopto-recording-scheduler -L 1`).
 - [ ] **Step 4: Package.** `.\src\publish.ps1 -CertificateThumbprint C183B7EC2EEF106AC77464B85C149C49C528332F` (PowerShell tool, sandbox off). Confirm `defaults.json` inside the zip has `updateShare` (read it with `Expand-Archive` to a temp dir and `Select-String updateShare` — do not print the secret line).
 - [ ] **Step 5: Release.** `.\src\release.ps1 -Version 1.4.0 -SharePath <share>` → GitHub release v1.4.0 exists; share has `1.4.0\`, `Install.cmd`, `How to install.txt`, `latest.json`.
 - [ ] **Step 6: Office acceptance — the user does this on a colleague's machine** (fresh Windows profile, not the maintainer's):

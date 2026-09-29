@@ -1316,7 +1316,7 @@ public sealed class CalendarViewModel : ObservableObject
     /// update" click opens a 404, which is exactly how people learn to ignore
     /// the banner. Change all three or none.</para>
     /// </summary>
-    private const string ReleasesUrl = "https://github.com/camster91/panopto-scheduler/releases/latest";
+    private const string ReleasesUrl = "https://github.com/camster91/panopto-recording-scheduler/releases/latest";
 
     private void OpenReleasesPage()
         => OpenInBrowser(

@@ -81,7 +81,7 @@ $gistId  = "f55820430e6625c7e862078ac0eb8bbb"
 # breaks here: gh resolves the repository from the remotes in the order it
 # finds them, and this checkout's 'origin' is Panopto's public upstream --
 # a repository this account cannot release to and must never try.
-$repo    = "camster91/panopto-scheduler"
+$repo    = "camster91/panopto-recording-scheduler"
 
 if (-not (Test-Path $appProj)) { throw "Cannot find the app project at $appProj" }
 
