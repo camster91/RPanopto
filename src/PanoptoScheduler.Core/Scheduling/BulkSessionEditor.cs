@@ -315,13 +315,11 @@ public sealed class BulkSessionEditor(
 
             var chunk = targets.Skip(start).Take(ChunkSize).ToList();
 
-            results.AddRange(await ApplyChunkAsync(
+            await ApplyChunkAsync(
                 chunk, dryRun,
                 $"Move to '{folder.Name}'.",
-                c => sessions.MoveSessionsAsync([.. chunk.Select(t => t.Id)], folder.Id, c),
-                ct).ConfigureAwait(false));
-
-            Report(progress, results, audit);
+                (ids, c) => sessions.MoveSessionsAsync(ids, folder.Id, c),
+                results, progress, audit, ct).ConfigureAwait(false);
         }
 
         return Finish(results, audit);
@@ -644,13 +642,11 @@ public sealed class BulkSessionEditor(
 
             var chunk = targets.Skip(start).Take(ChunkSize).ToList();
 
-            results.AddRange(await ApplyChunkAsync(
+            await ApplyChunkAsync(
                 chunk, dryRun,
                 "Delete, permanently.",
-                c => sessions.DeleteSessionsAsync([.. chunk.Select(t => t.Id)], c),
-                ct).ConfigureAwait(false));
-
-            Report(progress, results, audit);
+                (ids, c) => sessions.DeleteSessionsAsync(ids, c),
+                results, progress, audit, ct).ConfigureAwait(false);
         }
 
         return Finish(results, audit);
@@ -776,24 +772,68 @@ public sealed class BulkSessionEditor(
     /// or it threw. If it threw, this app does not know how far it got, and saying
     /// so is the honest answer rather than marking every session in the chunk as
     /// failed when some of them may well have been moved.</para>
+    ///
+    /// <para><b>Except that a SOAP fault is split, not reported.</b> Panopto faults
+    /// the whole call for one id it will not take — a recording someone already
+    /// deleted, one this account may not touch — so "running it again is safe" was
+    /// true and useless: the re-run sends the same hundred ids, the same one id
+    /// faults them all again, and ninety-nine good sessions fail forever behind it.
+    /// A fault is the server's answer, though, not a lost one, so the chunk is
+    /// resent one id at a time, which leaves exactly the bad id failing with
+    /// Panopto's own reason. Safe for the same reason the re-run is: these writes
+    /// are idempotent, so a session the faulted chunk did get to is moved or deleted
+    /// again to the same end state. Anything that is not a fault — a timeout, a
+    /// 5xx, a body that was not XML — is a call whose fate is unknown, and is still
+    /// reported as one rather than spending a hundred more calls finding out.</para>
+    ///
+    /// <para>Rows are added to <paramref name="results"/> and reported here rather
+    /// than returned, because a split chunk finishes a row per call: a stop part way
+    /// through must leave the singles that did go through in the trail, and a
+    /// returned list would be dropped along with the cancellation.</para>
     /// </summary>
-    private static async Task<IReadOnlyList<SessionEditResult>> ApplyChunkAsync(
+    private static async Task ApplyChunkAsync(
         IReadOnlyList<(Guid Id, string CurrentName)> chunk,
         bool dryRun,
         string description,
-        Func<CancellationToken, Task> apply,
+        Func<IReadOnlyList<Guid>, CancellationToken, Task> apply,
+        List<SessionEditResult> results,
+        IProgress<int>? progress,
+        Audit audit,
         CancellationToken ct)
     {
         if (dryRun)
-            return [.. chunk.Select(t => WouldApply(t.Id, t.CurrentName, description))];
+        {
+            results.AddRange(chunk.Select(t => WouldApply(t.Id, t.CurrentName, description)));
+            Report(progress, results, audit);
+            return;
+        }
 
         try
         {
-            await apply(ct).ConfigureAwait(false);
+            await apply([.. chunk.Select(t => t.Id)], ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (PanoptoSoapFaultException fault) when (chunk.Count > 1 && fault.Code != "Unreadable")
+        {
+            // "Unreadable" is the client's own code for a body that was not XML — a
+            // proxy page, not Panopto refusing an id — so it falls through to the
+            // unknown-fate report below with the other transport failures.
+            foreach (var (id, currentName) in chunk)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                results.Add(await ApplyAsync(
+                    id, currentName, dryRun: false, description,
+                    c => apply([id], c),
+                    ct).ConfigureAwait(false));
+
+                Report(progress, results, audit);
+            }
+
+            return;
         }
         catch (Exception ex)
         {
@@ -802,10 +842,13 @@ public sealed class BulkSessionEditor(
                 + "cannot tell which of them went through. Running it again is safe — the "
                 + "same end state applied twice is the same end state.";
 
-            return [.. chunk.Select(t => Fail(t.Id, t.CurrentName, message))];
+            results.AddRange(chunk.Select(t => Fail(t.Id, t.CurrentName, message)));
+            Report(progress, results, audit);
+            return;
         }
 
-        return [.. chunk.Select(t => Applied(t.Id, t.CurrentName, description, null))];
+        results.AddRange(chunk.Select(t => Applied(t.Id, t.CurrentName, description, null)));
+        Report(progress, results, audit);
     }
 
     private static SessionEditResult Fail(Guid id, string currentName, string message) => new()

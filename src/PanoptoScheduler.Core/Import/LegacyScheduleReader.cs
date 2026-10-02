@@ -102,7 +102,7 @@ public static class LegacyScheduleReader
         return extension switch
         {
             ".csv" => ReadCsv(File.ReadAllText(path), options),
-            ".xml" => ReadXml(File.ReadAllText(path)),
+            ".xml" => ReadXml(File.ReadAllText(path), options),
             _ => new ScheduleImportResult([], [new ScheduleImportError(0,
                 $"Expected a .csv or .xml file, got '{Path.GetFileName(path)}'.")]),
         };
@@ -152,8 +152,17 @@ public static class LegacyScheduleReader
         return new ScheduleImportResult(rows, errors);
     }
 
-    public static ScheduleImportResult ReadXml(string content)
+    /// <param name="options">
+    /// Only <see cref="ScheduleImportOptions.DayFirstDates"/> applies — the XML has
+    /// no delimiter. It is taken at all because the ambiguous-date warning tells the
+    /// operator to "re-import with day-first dates to swap", and that sentence is
+    /// the same for both formats; an XML read that dropped the option would offer a
+    /// fix the toggle then silently failed to apply.
+    /// </param>
+    public static ScheduleImportResult ReadXml(string content, ScheduleImportOptions? options = null)
     {
+        options ??= new ScheduleImportOptions();
+
         var rows = new List<ScheduleImportRow>();
         var errors = new List<ScheduleImportError>();
 
@@ -186,7 +195,7 @@ public static class LegacyScheduleReader
                 folder: Element(element, "CourseTitle"),
                 // The XML format has no webcast column; the original hard-coded false.
                 webcast: null,
-                new ScheduleImportOptions(),
+                options,
                 errors);
 
             if (row is not null) rows.Add(row);
