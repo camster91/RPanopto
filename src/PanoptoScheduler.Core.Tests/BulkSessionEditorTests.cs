@@ -773,29 +773,129 @@ public class BulkSessionEditorTests
     }
 
     /// <summary>
-    /// A chunk that faults is not a partial result. The app did not see which
-    /// sessions went through, so marking them all failed would be a claim it cannot
-    /// support — and every row has to say that re-running is safe, which is only
-    /// true because a move is idempotent. The two must be written together: if this
-    /// operation ever stopped being idempotent, that sentence would become a lie
-    /// that costs the operator a duplicated action.
+    /// A chunk whose fate is unknown is not a partial result. The app did not see
+    /// which sessions went through, so marking them all failed would be a claim it
+    /// cannot support — and every row has to say that re-running is safe, which is
+    /// only true because a move is idempotent. The two must be written together: if
+    /// this operation ever stopped being idempotent, that sentence would become a
+    /// lie that costs the operator a duplicated action.
+    ///
+    /// <para>Driven by a response that is not XML rather than by a SOAP fault: a
+    /// fault is Panopto's answer and is split per session (below), while a body
+    /// nobody can read is the unknown-fate case — and it must not be split, or one
+    /// broken proxy costs a hundred calls per chunk.</para>
     /// </summary>
     [Fact]
-    public async Task A_faulted_chunk_says_the_outcome_is_unknown_and_re_running_is_safe()
+    public async Task A_chunk_with_an_unknown_fate_says_so_and_that_re_running_is_safe()
     {
-        var (editor, _) = Build(h => h
+        var (editor, handler) = Build(h => h
             .Respond("GetFoldersList", SoapListings.FolderListing((Folder.ToString("D"), "Archive")))
-            .Respond("MoveSessions", """
-                <s:Fault xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-                  <faultcode>s:Client</faultcode><faultstring>Server busy</faultstring>
-                </s:Fault>
-                """));
+            .Respond("MoveSessions", "<not-xml"));
 
         var report = await editor.MoveAsync(Many(150), "Archive", dryRun: false);
 
         Assert.Equal(150, report.Failed);
+        Assert.Equal(2, handler.Calls.Count(c => c == "MoveSessions"));
         Assert.All(report.Results, r => Assert.Contains("cannot tell which of them went through", r.Message));
         Assert.All(report.Results, r => Assert.Contains("Running it again is safe", r.Message));
+    }
+
+    private const string RejectedId = """
+        <s:Fault xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+          <faultcode>s:Client</faultcode><faultstring>Session not found</faultstring>
+        </s:Fault>
+        """;
+
+    private static DestructiveAction PermitFor(IReadOnlyList<(Guid Id, string)> targets)
+        => new(DestructiveAction.DeleteVerb, [.. targets.Select(t => t.Id)], Acknowledged: true);
+
+    /// <summary>
+    /// <b>The fault the split exists for.</b> One session in the chunk is already
+    /// gone, Panopto faults the whole call for it, and resending the same hundred
+    /// would fault the same way forever. Resent one at a time, only that session
+    /// fails — with Panopto's reason, not "cannot tell which" — and the rest go.
+    /// </summary>
+    [Fact]
+    public async Task A_faulted_delete_chunk_is_resent_one_session_at_a_time()
+    {
+        var targets = Many(5);
+        var log = new RecordingAuditLog();
+        var seen = new ProgressCollector();
+
+        // The chunk faults, then the singles: 1 ok, 2 faults, the rest ok (the last
+        // queued body repeats).
+        var (editor, handler) = Build(h => h
+            .RespondOnce("DeleteSessions", RejectedId)
+            .RespondOnce("DeleteSessions", "")
+            .RespondOnce("DeleteSessions", RejectedId)
+            .RespondOnce("DeleteSessions", ""), log);
+
+        var report = await editor.DeleteAsync(targets, dryRun: false, PermitFor(targets), seen);
+
+        Assert.Equal(4, report.Applied);
+        var failed = Assert.Single(report.Results, r => r.Outcome == SessionEditOutcome.Failed);
+        Assert.Equal(Numbered(2), failed.SessionId);
+        Assert.Contains("Session not found", failed.Message);
+        Assert.DoesNotContain("cannot tell which", failed.Message);
+
+        Assert.Equal(6, handler.Calls.Count(c => c == "DeleteSessions"));
+
+        // One row per session — not the chunk's five failures and then five more.
+        Assert.Equal(targets.Select(t => (Guid?)t.Item1), log.Sessions);
+        Assert.Equal([1, 2, 3, 4, 5], seen.Values);
+    }
+
+    /// <summary>
+    /// The split is per chunk: the chunk that faulted is resent singly, and the
+    /// one after it still goes as one call.
+    /// </summary>
+    [Fact]
+    public async Task A_faulted_move_chunk_is_split_and_the_next_chunk_is_not()
+    {
+        var log = new RecordingAuditLog();
+        var (editor, handler) = Build(h => h
+            .Respond("GetFoldersList", SoapListings.FolderListing((Folder.ToString("D"), "Archive")))
+            .RespondOnce("MoveSessions", RejectedId)
+            .RespondOnce("MoveSessions", "")
+            .RespondOnce("MoveSessions", RejectedId)
+            .RespondOnce("MoveSessions", ""), log);
+
+        var report = await editor.MoveAsync(Many(150), "Archive", dryRun: false);
+
+        Assert.Equal(149, report.Applied);
+        Assert.Equal(Numbered(2), Assert.Single(report.Results, r => r.Outcome == SessionEditOutcome.Failed).SessionId);
+        Assert.Equal(1 + 100 + 1, handler.Calls.Count(c => c == "MoveSessions"));
+        Assert.Equal(150, log.Sessions.Distinct().Count());
+        Assert.Equal(150, log.Entries.Count);
+    }
+
+    /// <summary>
+    /// A stop during the split lands between single calls, and the sessions that
+    /// were already sent are in the trail — they happened, and a trail that only
+    /// learnt about them at the end of the chunk would not know.
+    /// </summary>
+    [Fact]
+    public async Task A_stop_during_a_split_chunk_keeps_the_rows_already_sent()
+    {
+        var targets = Many(5);
+        var log = new RecordingAuditLog();
+        using var cts = new CancellationTokenSource();
+
+        var (editor, handler) = Build(h => h
+            .RespondOnce("DeleteSessions", RejectedId)
+            .RespondOnce("DeleteSessions", ""), log);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => editor.DeleteAsync(
+            targets, dryRun: false, PermitFor(targets),
+            new CancelOnReport(cts), cts.Token));
+
+        Assert.Equal(2, handler.Calls.Count(c => c == "DeleteSessions"));
+        Assert.Equal(new Guid?[] { Numbered(1) }, log.Sessions);
+    }
+
+    private sealed class CancelOnReport(CancellationTokenSource cts) : IProgress<int>
+    {
+        public void Report(int value) => cts.Cancel();
     }
 
     /// <summary>

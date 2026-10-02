@@ -83,6 +83,15 @@ public sealed class BulkEditViewModel : ObservableObject
     private string? _previewed;
 
     /// <summary>
+    /// The sessions <see cref="_previewed"/> was armed for. Apply is offered only
+    /// while the ticks name exactly this set: a preview of three sessions is not
+    /// permission to change forty-three, and ticking more on the calendar does
+    /// not pass through <see cref="OnInputChanged"/>. The delete's permit has
+    /// carried its own set from the start; this is the same rule for the rest.
+    /// </summary>
+    private IReadOnlyList<Guid> _previewedTargets = [];
+
+    /// <summary>
     /// An input changed while a dry run was in flight — the window in which
     /// <see cref="_previewed"/> is still null and OnInputChanged has nothing
     /// to revoke. The apply closures read the live inputs, so a rename
@@ -188,6 +197,7 @@ public sealed class BulkEditViewModel : ObservableObject
         => Register(new AsyncRelayCommand(
             () => RunAsync(op, run, dryRun: false),
             () => !IsBusy && _selection().Count > 0 && _previewed == op
+                  && SelectionIsPreviewed()
                   && (extra?.Invoke() ?? true)));
 
     /// <summary>
@@ -449,6 +459,10 @@ public sealed class BulkEditViewModel : ObservableObject
     /// </summary>
     private IReadOnlyList<Guid> SelectedIds() => [.. _selection().Select(s => s.Id)];
 
+    /// <summary>Whether the ticks still name the set the armed preview ran against.</summary>
+    private bool SelectionIsPreviewed() =>
+        new HashSet<Guid>(_previewedTargets).SetEquals(SelectedIds());
+
     /// <summary>
     /// Remembers the set the operator was shown, rather than how many there were.
     ///
@@ -595,6 +609,7 @@ public sealed class BulkEditViewModel : ObservableObject
     private void RevokePreview()
     {
         _previewed = null;
+        _previewedTargets = [];
         ClearDeleteConfirmation();
     }
 
@@ -656,6 +671,18 @@ public sealed class BulkEditViewModel : ObservableObject
             return;
         }
 
+        // Checked again here rather than trusted to the button: the selection
+        // can change between the frame that enabled Apply and the press.
+        if (!dryRun && !(_previewed == op && SelectionIsPreviewed()))
+        {
+            RevokePreview();
+            Refresh();
+            Status = "The selection changed since the preview.";
+            Detail = "Nothing was written. Preview again to see what would happen to"
+                   + " the sessions ticked now.";
+            return;
+        }
+
         IsBusy = true;
         Results.Clear();
         Status = dryRun ? "Working out what would happen…" : "Applying…";
@@ -712,6 +739,7 @@ public sealed class BulkEditViewModel : ObservableObject
                              && report.Results.Any(r => r.Outcome != SessionEditOutcome.Failed)
                     ? op
                     : null;
+                _previewedTargets = _previewed is null ? [] : [.. targets.Select(t => t.Id)];
 
                 onPreviewed?.Invoke(report);
 
@@ -872,13 +900,18 @@ public sealed class BulkEditViewModel : ObservableObject
     private Task<BulkEditReport> RenameAsync(
         IReadOnlyList<SessionTarget> targets, bool dryRun, IProgress<int>? progress, CancellationToken ct)
     {
-        if (Find.Length == 0) throw new InvalidOperationException("Enter the text to find.");
+        // Read once, not per row: the boxes stay editable during a run, and a
+        // row renamed after an edit would get text no preview ever showed.
+        var find = Find;
+        var replaceWith = ReplaceWith;
+
+        if (find.Length == 0) throw new InvalidOperationException("Enter the text to find.");
 
         // Substituting an empty replacement is allowed — stripping a prefix is a
         // real thing to want — but emptying the name entirely is not, and the
         // editor refuses that below this call.
         return _panopto.BulkEditing.RenameAsync(
-            Flat(targets), name => name.Replace(Find, ReplaceWith), dryRun, progress, ct);
+            Flat(targets), name => name.Replace(find, replaceWith), dryRun, progress, ct);
     }
 
     private Task<BulkEditReport> MoveAsync(
@@ -963,7 +996,9 @@ public sealed class BulkEditViewModel : ObservableObject
     private Task<BulkEditReport> DescriptionAsync(
         IReadOnlyList<SessionTarget> targets, bool dryRun, IProgress<int>? progress, CancellationToken ct)
     {
+        // Both read once, for the same reason as the rename's inputs.
         var text = NewDescription.Trim();
+        var append = DescriptionAppend;
 
         return _panopto.BulkEditing.SetDescriptionAsync(
             targets,
@@ -971,7 +1006,7 @@ public sealed class BulkEditViewModel : ObservableObject
                 // An empty box means clear, whatever the append box says: there is
                 // no text to append, so the choice does not apply.
                 ? string.Empty
-                : DescriptionAppend && current.Trim().Length > 0
+                : append && current.Trim().Length > 0
                     ? $"{current.Trim()} {text}"
                     : text,
             dryRun,

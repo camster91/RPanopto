@@ -535,7 +535,12 @@ public partial class MainWindow : Window
         // because a completed recording is still openable — it just cannot be
         // dragged. The previous version refused the press outright, which is why
         // a past recording swallowed the click and could never be looked at.
-        _dragMayMove = block.CanReschedule;
+        //
+        // Not while the calendar is busy either: a read in flight replaces the
+        // cache when it lands, and a move made under it would be overwritten on
+        // screen by the pre-move set — the grid showing the old slot, and the
+        // panel ready to write it back.
+        _dragMayMove = block.CanReschedule && !_viewModel.IsBusy;
 
         _dragOrigin = e.GetPosition(this);
         _originTop = block.Top;
@@ -668,9 +673,38 @@ public partial class MainWindow : Window
         block.Left = _originLeft + SnapToDay(dx);
     }
 
+    /// <summary>
+    /// Ends a drag that lost the mouse without a release reaching it — Alt+Tab,
+    /// a modal prompt, the block being redrawn away. Left set, the next release
+    /// over any block would be read as the end of this one and move this
+    /// recording by a distance measured from a press long gone.
+    /// </summary>
+    private void Block_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (_dragging is not { } block) return;
+        if (sender is not FrameworkElement { DataContext: var owner } || !ReferenceEquals(owner, block)) return;
+
+        _dragging = null;
+        _dragMayMove = false;
+        block.Top = _originTop;
+        block.Left = _originLeft;
+    }
+
     private async void Block_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         if (_dragging is not { } block) return;
+
+        // Only the block that was pressed can end its drag. A release arriving
+        // on another one is not this gesture's end, and moving the pressed
+        // recording because of it is a move nobody made.
+        if (sender is not FrameworkElement { DataContext: var owner } || !ReferenceEquals(owner, block))
+        {
+            _dragging = null;
+            _dragMayMove = false;
+            block.Top = _originTop;
+            block.Left = _originLeft;
+            return;
+        }
 
         var (dx, dy) = Offset(e);
         var mayMove = _dragMayMove;

@@ -240,6 +240,56 @@ public class LegacyCookieTests
     }
 
     /// <summary>
+    /// The retry was once spent for the client's whole lifetime: a stale cookie
+    /// healed in the morning, and when the fresh one expired in the afternoon
+    /// every read faulted for good. A retry whose fresh cookie works has ended
+    /// its episode, so the next expiry gets the same one-shot cure.
+    /// </summary>
+    [Fact]
+    public async Task A_healed_cookie_leaves_the_retry_available_for_the_next_expiry()
+    {
+        var (soap, handler) = Build(
+            // Morning: the first cookie is stale, the retry heals it.
+            () => Cookie(".ASPXAUTH=morning-stale"), Fault,
+            () => Cookie(".ASPXAUTH=morning-fresh"), Ok,
+            // Afternoon: that cookie has expired in turn.
+            Fault,
+            () => Cookie(".ASPXAUTH=afternoon-fresh"), Ok);
+
+        await ListAsync(soap);
+        await ListAsync(soap);
+
+        Assert.Equal(3, handler.CountOf("legacyLogin"));
+
+        var calls = handler.Requests.Where(r => r.Path.Contains("RemoteRecorderManagement")).ToList();
+        Assert.Equal(".ASPXAUTH=afternoon-fresh", calls[^1].Cookie);
+    }
+
+    /// <summary>
+    /// A retry that faults again stays spent — that is what bounds a faulting
+    /// run — but a new session owes nothing to the last one's faults.
+    /// </summary>
+    [Fact]
+    public async Task A_new_session_gets_its_own_retry()
+    {
+        var (soap, handler) = Build(
+            () => Cookie(CookieHeader), Fault,
+            () => Cookie(CookieHeader), Fault,
+            // After ForgetSession: a fresh exchange, a stale-looking fault, and
+            // a retry that heals it.
+            () => Cookie(".ASPXAUTH=next-1"), Fault,
+            () => Cookie(".ASPXAUTH=next-2"), Ok);
+
+        await Assert.ThrowsAsync<PanoptoSoapFaultException>(() => ListAsync(soap));
+
+        soap.ForgetSession();
+
+        await ListAsync(soap);
+
+        Assert.Equal(4, handler.CountOf("legacyLogin"));
+    }
+
+    /// <summary>
     /// An exchange that returns no <c>.ASPXAUTH</c> must fail loudly. Carrying
     /// on with no cookie is the silent-anonymous-request failure mode this whole
     /// class exists to prevent.
@@ -352,6 +402,56 @@ public class LegacyCookieTests
         // And the saved session went too, or the next launch would resume as
         // the person who signed out.
         Assert.Equal(1, store.Clears);
+    }
+
+    /// <summary>
+    /// A sign-in drops the cookie too, not only a sign-out. A refused session
+    /// (a 401 on a read) ends by asking for a new sign-in without SignOut ever
+    /// running, so on a shared machine the next person to sign in would
+    /// otherwise write under the cookie the previous person left behind.
+    ///
+    /// <para>The sign-in is started with a token already cancelled, so it stops
+    /// at the browser step; the drop happens before that, which is the point.</para>
+    /// </summary>
+    [Fact]
+    public async Task Starting_a_sign_in_drops_the_previous_cookie()
+    {
+        var handler = new ScriptedHandler(() => Cookie(".ASPXAUTH=first"), Ok);
+        var http = new HttpClient(handler) { BaseAddress = new Uri("https://rotman.ca.panopto.com") };
+
+        const string tenant = "https://rotman.ca.panopto.com";
+        const string client = "test-client";
+
+        var store = new FakeTokenStore();
+        store.Save(tenant, client, new TokenSet("test-token", "refresh", DateTimeOffset.UtcNow.AddHours(1)));
+
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+
+        var connection = new PanoptoConnection(
+            new PanoptoCredentials
+            {
+                TenantUrl = tenant,
+                ClientId = client,
+                ClientSecret = "secret",
+                RedirectUri = $"http://localhost:{port}/oauth/callback",
+            },
+            store,
+            http: http);
+
+        Assert.True(connection.Restore());
+
+        await ListAsync(connection.Soap);
+        Assert.Equal(".ASPXAUTH=first", connection.Soap.AuthCookie);
+
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connection.SignInAsync(cancelled.Token));
+
+        Assert.Null(connection.Soap.AuthCookie);
     }
 
     /// <summary>

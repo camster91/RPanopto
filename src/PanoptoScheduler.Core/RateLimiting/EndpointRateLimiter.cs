@@ -31,6 +31,9 @@ public sealed class EndpointRateLimiter
 
     private DateTimeOffset _pausedUntil = DateTimeOffset.MinValue;
 
+    /// <summary>Added to every server-imposed pause. See <see cref="PauseFor"/>.</summary>
+    public static readonly TimeSpan PauseMargin = TimeSpan.FromMilliseconds(20);
+
     public EndpointRateLimiter(string endpoint, (int Limit, TimeSpan Window)[]? limits = null, ApiCallCounter? counter = null)
     {
         Endpoint = endpoint;
@@ -102,7 +105,14 @@ public sealed class EndpointRateLimiter
 
         lock (_sync)
         {
-            var until = DateTimeOffset.UtcNow + retryAfter;
+            // Padded, because Retry-After is a minimum and the clocks that decide
+            // "now" here and on the server are not the same clock: the wall clock
+            // this pause is kept in and the timer that wakes the waiter can each
+            // land a millisecond either side, and a call that goes out a
+            // millisecond early is a call the server is still refusing. Arriving
+            // a few milliseconds late costs nothing; arriving early costs a
+            // second 429 and a longer pause.
+            var until = DateTimeOffset.UtcNow + retryAfter + PauseMargin;
             // Never shorten an existing pause.
             if (until > _pausedUntil) _pausedUntil = until;
         }

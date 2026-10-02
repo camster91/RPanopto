@@ -43,7 +43,16 @@ public sealed class BulkWindowViewModel : ObservableObject
                     ? "1 row read from the file, added to the grid."
                     : $"{added} rows read from the file, added to the grid.",
                 "Preview before booking.");
-        });
+        }, () => Booking.Grid.IsBusy);
+
+        // The import tab's Send is refused while the grid is booking, and only
+        // this view model sees both halves — so this is where a run starting or
+        // ending is passed on. Nothing in the app requeries commands by itself.
+        Booking.Grid.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(BookingGridViewModel.IsBusy))
+                Import.SendRowsCommand.RaiseCanExecuteChanged();
+        };
 
         Edit = new BulkEditViewModel(panopto, selection, selectionConsumed);
 
@@ -111,14 +120,14 @@ public sealed class BulkWindowViewModel : ObservableObject
     /// would not close over a file read would be a lock with no visible reason.
     /// A booking or an edit run keeps writing to the tenant after this window
     /// closes — it does not stop, it only loses its Stop button — which is the
-    /// state the window's Escape guard exists to refuse.
+    /// state the window's close guard exists to refuse.
     /// </summary>
     public bool RunInProgress => Booking.Grid.IsBusy || Edit.IsBusy;
 
     /// <summary>
     /// Puts a message on the status line of whichever tool is running, which is
     /// the line that run's own progress reports already arrive on. The window's
-    /// Escape guard is the caller: a refusal has to land where the operator is
+    /// close guard is the caller: a refusal has to land where the operator is
     /// already watching for signs of life, or it has not landed anywhere.
     /// </summary>
     public void AnnounceOnRun(string status, string detail)

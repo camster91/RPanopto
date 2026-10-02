@@ -648,6 +648,7 @@
                                                             KeyDown="Block_KeyDown"
                                                             MouseLeftButtonDown="Block_MouseLeftButtonDown"
                                                             MouseMove="Block_MouseMove"
+                                                            LostMouseCapture="Block_LostMouseCapture"
                                                             MouseLeftButtonUp="Block_MouseLeftButtonUp">
                                                         <Border.Style>
                                                             <Style TargetType="Border">

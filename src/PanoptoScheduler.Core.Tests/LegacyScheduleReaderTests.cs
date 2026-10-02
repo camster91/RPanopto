@@ -407,6 +407,44 @@ public class LegacyScheduleReaderTests
         Assert.Contains("Not valid XML", result.Errors[0].Message);
     }
 
+    /// <summary>
+    /// The ambiguous-date warning tells the operator to re-import day-first, and
+    /// says so for XML rows too — so the option has to reach the XML reader, or the
+    /// advice is a toggle that does nothing for half the formats.
+    /// </summary>
+    [Fact]
+    public void Xml_day_first_option_swaps_an_ambiguous_date()
+    {
+        var result = LegacyScheduleReader.ReadXml(SampleXml, new ScheduleImportOptions { DayFirstDates = true });
+
+        Assert.Empty(result.Errors);
+        Assert.All(result.Rows, r => Assert.Equal(new DateTime(2012, 4, 10), r.Start.Date));
+    }
+
+    /// <summary>
+    /// The app reads files by path, so the option has to survive the extension
+    /// switch as well — the XML branch used to drop it on the way through.
+    /// </summary>
+    [Fact]
+    public void Read_file_passes_the_day_first_option_to_an_xml_file()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"schedule-{Guid.NewGuid():N}.xml");
+        File.WriteAllText(path, SampleXml);
+
+        try
+        {
+            var monthFirst = LegacyScheduleReader.ReadFile(path);
+            var dayFirst = LegacyScheduleReader.ReadFile(path, new ScheduleImportOptions { DayFirstDates = true });
+
+            Assert.Equal(new DateTime(2012, 10, 4), monthFirst.Rows[0].Start.Date);
+            Assert.Equal(new DateTime(2012, 4, 10), dayFirst.Rows[0].Start.Date);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void Reports_an_unsupported_extension()
     {

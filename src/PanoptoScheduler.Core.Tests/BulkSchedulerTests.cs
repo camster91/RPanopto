@@ -383,6 +383,30 @@ public class BulkSchedulerTests
         Assert.Equal(1, handler.Calls.Count(c => c == "GetDefaultFolderForRecorder"));
     }
 
+    /// <summary>
+    /// A hint that names several folders by containment degrades to the
+    /// fallback, like a missing one — but says so, because "was not found"
+    /// would send the operator hunting for a typo that is not there.
+    /// </summary>
+    [Fact]
+    public async Task An_ambiguous_folder_hint_falls_back_and_says_why()
+    {
+        var (scheduler, _) = Build(h => h
+            .Respond("ListRecorders", RecorderListing((RecorderGuid, "JMHH240")))
+            .Respond("GetFoldersList", FolderListing(
+                ("11111111-1111-1111-1111-111111111111", "MBA Year 1"),
+                ("22222222-2222-2222-2222-222222222222", "MBA Year 2")))
+            .Respond("GetDefaultFolderForRecorder",
+                $"""<GetDefaultFolderForRecorderResponse xmlns="http://tempuri.org/"><GetDefaultFolderForRecorderResult>{FolderGuid}</GetDefaultFolderForRecorderResult></GetDefaultFolderForRecorderResponse>"""));
+
+        var report = await scheduler.RunAsync(
+            [Row(folder: "MBA")], new BulkScheduleOptions { DryRun = true });
+
+        Assert.Equal(1, report.WouldSchedule);
+        Assert.Contains("'MBA' is part of 2 folder names, so none was guessed", report.Outcomes[0].Message);
+        Assert.DoesNotContain("MBA Year", report.Outcomes[0].Message);
+    }
+
     [Fact]
     public async Task Skips_when_no_folder_can_be_resolved_at_all()
     {
