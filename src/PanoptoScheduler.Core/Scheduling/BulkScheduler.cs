@@ -183,7 +183,7 @@ public sealed class BulkScheduler(
             try
             {
                 Report(await ScheduleOneAsync(
-                    row, recorderList, folderCache, defaultFolderCache, defaultFolder, options, ct)
+                    row, recorderList, folderCache, defaultFolderCache, defaultFolder, options, run, ct)
                     .ConfigureAwait(false));
             }
             catch (OperationCanceledException)
@@ -214,6 +214,7 @@ public sealed class BulkScheduler(
         Dictionary<Guid, Guid> defaultFolderCache,
         PanoptoFolder? defaultFolder,
         BulkScheduleOptions options,
+        BulkAuditRun run,
         CancellationToken ct)
     {
         ScheduleOutcome Skip(string why) => new()
@@ -302,6 +303,26 @@ public sealed class BulkScheduler(
 
         if (options.DryRun)
         {
+            // The one refusal the real run makes that the rehearsal would not
+            // otherwise see: RoomClock.ToWire throws for a wall clock the room's
+            // zone jumps over, and it only runs when the write is built. Checked
+            // here, both ends, with the sentence the run would fail the row with —
+            // a 22:00–02:30 booking on the spring-forward Saturday has a start
+            // that exists and an end that does not, and a preview that only looked
+            // at the start would approve it. Failed, not Skipped, because Failed is
+            // what the run itself reports for it.
+            if ((RoomClock.MissingHour(row.Start, recorders.RoomZone)
+                 ?? RoomClock.MissingHour(row.End, recorders.RoomZone)) is { } missing)
+            {
+                return new ScheduleOutcome
+                {
+                    Line = row.Line,
+                    Title = row.Title,
+                    Kind = ScheduleOutcomeKind.Failed,
+                    Message = missing,
+                };
+            }
+
             return new ScheduleOutcome
             {
                 Line = row.Line,
@@ -312,9 +333,37 @@ public sealed class BulkScheduler(
             };
         }
 
-        var result = await recorders.ScheduleAsync(
-            row.Title, folder.Id, row.IsBroadcast, row.Start, row.End, [recorder.Id], ct)
-            .ConfigureAwait(false);
+        ScheduledRecordingResult result;
+
+        try
+        {
+            result = await recorders.ScheduleAsync(
+                row.Title, folder.Id, row.IsBroadcast, row.Start, row.End, [recorder.Id], ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (PanoptoSoapClient.WriteMayHaveLeft(ex, ct))
+        {
+            // A timeout on the booking itself: the request may have reached
+            // Panopto, and a ScheduleRecording that reached it may have created
+            // the recording. The run still ends — RunAsync rethrows, and the
+            // window tells the operator to check the tenant before booking that
+            // row again — but the trail hears about the row first. It used to be
+            // rethrown untouched, so the one booking that might exist unreported
+            // was also the one the trail had no line for. Written straight to the
+            // run with an outcome of its own: the outcome list is dropped with the
+            // exception, and "Failed" would say it did not happen, which nobody
+            // knows.
+            run.Row(
+                null,
+                row.Title,
+                "Unknown",
+                $"Outcome unknown (stopped in flight): booking on {recorder.Name} at "
+                + $"{row.Start:ddd d MMM HH:mm}–{row.End:HH:mm} was sent and then cut off "
+                + $"({ex.Message}), so the recording may or may not exist. Check the tenant "
+                + "before booking this row again — a second attempt is a second recording.",
+                $"line {row.Line}");
+            throw;
+        }
 
         if (result.SessionId == Guid.Empty)
         {

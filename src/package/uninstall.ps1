@@ -65,19 +65,64 @@ if (-not $FromTemp) {
     if ($Purge) { $forward += '-Purge' }
     if ($Force) { $forward += '-Force' }
 
-    $inner = Start-Process -FilePath $powershell -ArgumentList $forward -Wait -PassThru
+    # -NoNewWindow runs the inner copy in THIS console rather than a window of
+    # its own. Its own window closed the instant it exited, so a refusal -
+    # "the app is still running", the elevation check - flashed past unread
+    # and the uninstall looked like it had silently done nothing.
+    #
+    # Sharing the console is only half of it: launched from Settings > Apps,
+    # this console is itself a window that closes when this process exits. So
+    # on failure it waits for Enter before closing. Success does not wait - the
+    # entry vanishing from Settings is the confirmation - and a run without an
+    # interactive console (-NonInteractive, a redirected stdin) cannot be
+    # prompted, so the prompt is attempted and its failure ignored.
+    $inner = Start-Process -FilePath $powershell -ArgumentList $forward -NoNewWindow -Wait -PassThru
     Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
-    exit $inner.ExitCode
+    $code = $inner.ExitCode
+    if ($code -ne 0) {
+        try { [void](Read-Host '  Press Enter to close this window') } catch { }
+    }
+    exit $code
 }
 
 # ----------------------------------------------------- can we do this at all?
 
-# An elevated prompt would be looking at the administrator's profile, not the
-# person's, so it would find nothing and appear to succeed at doing nothing.
+# A run elevated AS SOMEONE ELSE -- the IT account typed into a UAC prompt --
+# would be looking at that account's profile, not the person's, so it would
+# find nothing and appear to succeed at doing nothing.
+#
+# Being an administrator is not the problem by itself. Refusing on that alone
+# (as this once did) meant an administrator account on a machine with UAC
+# turned off could never uninstall: Settings > Apps runs this with the admin
+# token and no -Force, so every attempt failed. The test is whether the
+# account this runs as is the account signed in to the desktop, read from the
+# owner of explorer.exe in this session -- Explorer is the desktop, so it runs
+# as whoever is sitting at it. When that cannot be read (no Explorer, WMI
+# unavailable, owners that disagree) the old rule stands and an elevated run
+# is refused. install.ps1 makes the same check for the same reason.
+function Get-DesktopUserSid {
+    try {
+        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        $owners = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'explorer.exe' AND SessionId = $session" -ErrorAction Stop |
+            ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction Stop } |
+            Where-Object { $_.ReturnValue -eq 0 -and $_.Sid } |
+            ForEach-Object { $_.Sid } |
+            Select-Object -Unique)
+        if ($owners.Count -eq 1) { return $owners[0] }
+    } catch { }
+    return $null
+}
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -and -not $Force) {
-    Fail "this is running from an elevated (administrator) prompt, so it would be removing the program for the administrator rather than for you. Close it and run this from your own account."
+    $desktopSid = Get-DesktopUserSid
+    if (-not $desktopSid) {
+        Fail "this is running from an elevated (administrator) prompt, and the account signed in to this desktop could not be determined, so it might be removing the program for the administrator rather than for you. Close it and run this from your own account, or pass -Force if you do mean $($identity.Name)."
+    }
+    if ($desktopSid -ne $identity.User.Value) {
+        Fail "this is running as $($identity.Name), not as the account signed in to this desktop, so it would be removing the program for $($identity.Name) rather than for you. Close it and run this from your own account, or pass -Force if you do mean $($identity.Name)."
+    }
 }
 
 $running = @(Get-Process -Name 'PanoptoScheduler.App' -ErrorAction SilentlyContinue)

@@ -34,8 +34,17 @@ not at all and leaves no shortcuts behind. It is the right choice for a USB
 stick, a loaner laptop, or a machine you do not want to change. The only thing
 you give up is the Start Menu entry.
 
-Uninstalling keeps your saved sign-in, templates and logs. Run
-`uninstall.ps1 -Purge` if you want those gone too.
+Uninstalling keeps your saved sign-in, templates and logs. To remove those
+too, run the installed uninstaller with `-Purge` from a Command Prompt (the
+`-ExecutionPolicy Bypass` is needed for the same reason `Install.cmd` passes
+it — a default policy will not run the script directly):
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\Panopto Scheduler\uninstall.ps1" -Purge
+```
+
+If you never installed it, run the same command against the `uninstall.ps1`
+in the folder you unzipped.
 
 > **Keep the zip to the team.** It carries the shared OAuth client that lets the
 > app ask Panopto for a sign-in. It grants no access to any recording by itself
@@ -101,7 +110,8 @@ a reason that was learned rather than guessed:
   proves integrity (tampered files fail) but not reputation — SmartScreen
   keeps warning until the certificate is deployed to the machines, which is
   what `PanoptoScheduler-CodeSigning.cer` and
-  `Code-signing-certificate-for-IT.txt` in the zip are for: the note tells IT
+  `Code-signing-certificate-for-IT.txt` in the zip (and attached beside it on
+  every release) are for: the note tells IT
   to put the `.cer` into Trusted Root and Trusted Publishers, and the warnings
   stop.
 - **If a CA-issued certificate is ever bought** (OV: cheaper, reputation builds
@@ -206,6 +216,12 @@ The zip holds the published app plus three files copied out of `src\package\`:
 | `install.ps1` | The per-user install. |
 | `uninstall.ps1` | Placed in the install folder, so Settings → Apps can find it. |
 
+A signed build (`-CertificateThumbprint`) also carries
+`PanoptoScheduler-CodeSigning.cer` and `Code-signing-certificate-for-IT.txt`,
+copied from `src\dist\` on the packaging machine — they are the packager's to
+export and are not in the repository. `publish.ps1` warns if either is missing,
+and `release.ps1` refuses a zip without them.
+
 They are plain script on purpose. A packaged installer `.exe` — Inno, NSIS,
 anything self-extracting — is the exact shape the endpoint protection on these
 workstations deletes on execution, and an `.msi` would need administrator rights.
@@ -246,8 +262,16 @@ refuses to zip it if a `.pdb` has appeared. Always ship the zip.
    holds the download. Running copies notice on their next start, because the
    update check reads the gist on every launch.
 
-   If a run half-finished — the release exists but the gist was not bumped —
-   the script says so and re-running it resumes at the gist step; the error
+   Before touching GitHub it checks that the checkout is clean and its commit
+   is pushed to that repository — the tag is created at that commit, not at
+   whatever the default branch points to — and it opens the zip to confirm the
+   executable and both scripts are signed by the shipped `.cer`, and that the
+   executable's version (and, when stamped, its commit) match.
+
+   If a run half-finished, re-running it resumes. A draft or partly uploaded
+   release (a dropped upload leaves one) is finished — missing files uploaded,
+   then published — and the gist is bumped only once the release is published
+   with its zip. If the release is live but the gist was not bumped, the error
    names the one `gh gist edit` command that finishes the job by hand.
 
 **The release page is the download.** The banner in the app opens the

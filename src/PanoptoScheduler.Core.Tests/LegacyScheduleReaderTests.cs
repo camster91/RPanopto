@@ -127,6 +127,27 @@ public class LegacyScheduleReaderTests
         Assert.True(result.Rows[0].IsBroadcast);
     }
 
+    /// <summary>
+    /// A hand-edited file puts a space after each comma, and the quote after that
+    /// space used to be taken literally — so the comma inside the name split the
+    /// field, every later column moved one place right, and the folder was read as
+    /// the webcast flag. Padding after a closing quote is dropped the same way;
+    /// unquoted fields are trimmed where they are read, as before.
+    /// </summary>
+    [Theory]
+    [InlineData("A, R, 2021-01-26, 10:00, 11:00, \"Smith, John\", Finance, 1")]
+    [InlineData("A,R,2021-01-26,10:00,11:00,\t\"Smith, John\"  ,Finance,1")]
+    public void A_quoted_field_after_padding_keeps_its_comma(string line)
+    {
+        var result = LegacyScheduleReader.ReadCsv(line);
+
+        Assert.Empty(result.Errors);
+        var row = Assert.Single(result.Rows);
+        Assert.Equal("Smith, John", row.Presenter);
+        Assert.Equal("Finance", row.FolderHint);
+        Assert.True(row.IsBroadcast);
+    }
+
     [Fact]
     public void Keeps_newlines_inside_quoted_fields_and_still_reports_later_line_numbers()
     {
@@ -301,13 +322,39 @@ public class LegacyScheduleReaderTests
 
     // ---- Validation -----------------------------------------------------
 
+    /// <summary>
+    /// A zero-length row is still refused. An end earlier on the clock than the
+    /// start is now read as running past midnight (below), so equal times are what
+    /// is left to be "not after" — and rolling those a day would turn a typo into a
+    /// 24-hour recording.
+    /// </summary>
     [Fact]
     public void Reports_an_end_time_that_is_not_after_the_start()
     {
-        var result = LegacyScheduleReader.ReadCsv("A,R,2021-01-26,11:00,10:00,,F,0");
+        var result = LegacyScheduleReader.ReadCsv("A,R,2021-01-26,11:00,11:00,,F,0");
 
         Assert.Empty(result.Rows);
         Assert.Contains("not after", result.Errors[0].Message);
+    }
+
+    /// <summary>
+    /// "10:00 PM to 12:00 AM" means the midnight that ends that evening. The end
+    /// used to be put on the start's own date — the midnight that began it — so
+    /// the row was refused as ending before it started, and the next-day warning
+    /// could never fire because no end was ever on another date.
+    /// </summary>
+    [Theory]
+    [InlineData("10:00 PM", "12:00 AM", 2)]
+    [InlineData("11:00 PM", "1:30 AM", 2.5)]
+    public void An_end_past_midnight_rolls_to_the_next_day_and_says_so(string start, string end, double hours)
+    {
+        var result = LegacyScheduleReader.ReadCsv($"A,R,2021-01-26,{start},{end},P,F,0");
+
+        Assert.Empty(result.Errors);
+        var row = Assert.Single(result.Rows);
+        Assert.Equal(new DateTime(2021, 1, 27), row.End.Date);
+        Assert.Equal(TimeSpan.FromHours(hours), row.End - row.Start);
+        Assert.Contains(row.Warnings, w => w.Contains("following day", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

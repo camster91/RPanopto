@@ -156,6 +156,47 @@ public class BulkSchedulerTests
         Assert.Contains("Would record on JMHH240", report.Outcomes[0].Message);
     }
 
+    /// <summary>
+    /// The spring-forward hour, in a preview. The real run refuses it inside
+    /// <c>RoomClock.ToWire</c>, which a dry run never reaches — so the preview
+    /// used to say "would record" for rows the run then failed. Both ends: the
+    /// overnight row's start exists, and only its end falls in the gap. The
+    /// scheduler here converts through the default zone, America/Toronto, where
+    /// 02:00–03:00 on 8 March 2026 does not happen.
+    /// </summary>
+    [Theory]
+    [InlineData(1, 30, 8)]   // 01:30–02:30 on the Sunday
+    [InlineData(22, 0, 7)]   // 22:00 Saturday – 02:30 Sunday
+    public async Task A_dry_run_refuses_a_slot_that_ends_in_the_hour_that_does_not_exist(
+        int startHour, int startMinute, int startDay)
+    {
+        var row = Row() with
+        {
+            Start = new DateTime(2026, 3, startDay, startHour, startMinute, 0),
+            End = new DateTime(2026, 3, 8, 2, 30, 0),
+        };
+
+        async Task<BulkScheduleReport> Run(bool dryRun)
+        {
+            var (scheduler, _) = Build(h => h
+                .Respond("ListRecorders", RecorderListing((RecorderGuid, "JMHH240")))
+                .Respond("GetFoldersList", FolderListing((FolderGuid, "TestFolder")))
+                .Respond("ScheduleRecording", Scheduled()));
+
+            return await scheduler.RunAsync([row], new BulkScheduleOptions { DryRun = dryRun });
+        }
+
+        var preview = Assert.Single((await Run(dryRun: true)).Outcomes);
+        var real = Assert.Single((await Run(dryRun: false)).Outcomes);
+
+        Assert.Equal(ScheduleOutcomeKind.Failed, preview.Kind);
+        Assert.Contains("2026-03-08 02:30", preview.Message, StringComparison.Ordinal);
+
+        // The rehearsal says what the run says, word for word.
+        Assert.Equal(real.Kind, preview.Kind);
+        Assert.Equal(real.Message, preview.Message);
+    }
+
     // ---- Resolution -----------------------------------------------------
 
     /// <summary>

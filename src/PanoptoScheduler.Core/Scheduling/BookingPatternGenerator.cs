@@ -134,18 +134,31 @@ public static partial class BookingPatternGenerator
         // is the one fault that would otherwise reach the operator as a dozen
         // separate failures. RoomClock.ToWire throws for a wall clock the zone
         // jumps over, and this says so once, before any of it is drawn.
+        //
+        // The end as well as the start. Only the start used to be checked, and
+        // ToWire converts both — so 01:30–02:30 on the spring-forward Sunday, or an
+        // overnight 22:00–02:30 from the Saturday, passed here and then failed on
+        // every one of those rows at write time. The end is placed exactly as
+        // Generate places it, on the next day when it is before the start, because
+        // that is the date whose 02:30 the write will ask for.
         if (roomZone is not null)
         {
+            var overnight = pattern.End < pattern.Start;
+
             var landInTheGap = dates
-                .Where(d => roomZone.IsInvalidTime(d.ToDateTime(TimeOnly.FromTimeSpan(pattern.Start))))
+                .Where(d =>
+                    RoomClock.MissingHour(d.ToDateTime(TimeOnly.FromTimeSpan(pattern.Start)), roomZone) is not null
+                    || RoomClock.MissingHour(
+                        (overnight ? d.AddDays(1) : d).ToDateTime(TimeOnly.FromTimeSpan(pattern.End)),
+                        roomZone) is not null)
                 .ToList();
 
             if (landInTheGap.Count > 0)
             {
                 problems.Add(
-                    $"{landInTheGap.Count} of {dates.Count} date(s) would start inside the hour "
+                    $"{landInTheGap.Count} of {dates.Count} date(s) would start or end inside the hour "
                     + $"that does not exist in {roomZone.Id} — the clock jumps forward over it, "
-                    + $"first on {landInTheGap[0]:yyyy-MM-dd}. Pick a start time outside that hour, "
+                    + $"first on {landInTheGap[0]:yyyy-MM-dd}. Pick start and end times outside that hour, "
                     + "or book those dates separately.");
             }
         }

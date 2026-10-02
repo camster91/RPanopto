@@ -110,37 +110,71 @@ public sealed class LoopbackListener(int port, string expectedPath, TimeSpan? co
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
             connectionCts.CancelAfter(_connectionDeadline);
 
-            string requestLine;
+            IReadOnlyDictionary<string, string>? query;
             try
             {
-                requestLine = await ReadRequestLineAsync(client, connectionCts.Token)
+                var requestLine = await ReadRequestLineAsync(client, connectionCts.Token)
                     .ConfigureAwait(false);
+
+                query = ParseQuery(requestLine, expectedState);
+
+                if (query is null)
+                {
+                    // Not our redirect — favicon, probe, or a stray request to the
+                    // callback path. Answer cheaply and keep waiting: ending the
+                    // wait here would abort a sign-in that was about to succeed.
+                    await WriteResponseAsync(client, connectionCts.Token, "Waiting for authorization…", 404)
+                        .ConfigureAwait(false);
+                    continue;
+                }
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested
-                                                     && !timeoutCts.IsCancellationRequested)
+            catch (Exception ex) when (IsOneConnectionsFault(ex, ct, timeoutCts.Token))
             {
-                // The connection's own deadline — not the user giving up and
-                // not the authorization window expiring, both of which
-                // propagate. One connection was silent; the next one may be
-                // the redirect.
+                // One connection went wrong — it was silent past its deadline, or
+                // it reset before its request line was read or its 404 written.
+                // The 404 used to sit outside this guard, and the read caught
+                // only the deadline, so a browser preconnect that hung up early
+                // or a scanner that resets every socket it opens ended the whole
+                // sign-in with a socket error; and a deadline that fired during
+                // the write escaped as a bare cancellation, which the
+                // authenticator reports as the sign-in window expiring when it
+                // had minutes left. The `using` closes this one; the next
+                // connection may be the redirect.
                 continue;
             }
 
-            var query = ParseQuery(requestLine, expectedState);
-
-            if (query is not null)
+            try
             {
                 await WriteResponseAsync(client, connectionCts.Token).ConfigureAwait(false);
-                return query;
+            }
+            catch (Exception ex) when (IsOneConnectionsFault(ex, ct, timeoutCts.Token))
+            {
+                // The code is already in hand. A browser that closed the tab the
+                // instant it had sent the redirect misses the "you can close this
+                // tab" page, which costs nothing; throwing here would throw away a
+                // sign-in that has, in every way that matters, succeeded.
             }
 
-            // Not our redirect — favicon, probe, or a stray request to the
-            // callback path. Answer cheaply and keep waiting: ending the wait
-            // here would abort a sign-in that was about to succeed.
-            await WriteResponseAsync(client, connectionCts.Token, "Waiting for authorization…", 404)
-                .ConfigureAwait(false);
+            return query;
         }
     }
+
+    /// <summary>
+    /// Whether <paramref name="error"/> belongs to the one connection being served,
+    /// rather than to the wait as a whole.
+    ///
+    /// <para>A socket error is always the connection's own. A cancellation is the
+    /// connection's only when neither the caller nor the authorization window has
+    /// been cancelled — those two must still end the wait, and do: they propagate
+    /// from here, or from the next accept if a socket error raced them.</para>
+    /// </summary>
+    private static bool IsOneConnectionsFault(Exception error, CancellationToken ct, CancellationToken window)
+        => error switch
+        {
+            IOException or SocketException => true,
+            OperationCanceledException => !ct.IsCancellationRequested && !window.IsCancellationRequested,
+            _ => false,
+        };
 
     private static async Task<string> ReadRequestLineAsync(TcpClient client, CancellationToken ct)
     {

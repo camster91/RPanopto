@@ -114,7 +114,14 @@ if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
 # PublishSingleFile=false is not a default to leave to chance: a self-extracting
 # single-file exe is the exact shape the endpoint protection on these machines
 # deletes on execution.
-& dotnet publish $appProj -c Release -p:SelfContained=true -p:RuntimeIdentifier=win-x64 -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:PublishDir="$publish\" -p:DebugType=none -p:DebugSymbols=false
+#
+# PublishDir ends in a forward slash, not a backslash. MSBuild accepts either,
+# but a trailing backslash sits right before the closing quote: when the path
+# has a space in it (C:\Users\First Last\...) Windows PowerShell 5.1 wraps the
+# argument in quotes, and dotnet reads the \" as an escaped quote -- so this
+# argument swallows the ones after it and the publish lands somewhere else, or
+# fails with an error about a property nobody passed.
+& dotnet publish $appProj -c Release -p:SelfContained=true -p:RuntimeIdentifier=win-x64 -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:PublishDir="$publish/" -p:DebugType=none -p:DebugSymbols=false
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
 
 $exe = Join-Path $publish $exeName
@@ -281,6 +288,26 @@ from unsigned files when a signature was asked for.
         }
     }
     Write-Host "  Signed $exeName, install.ps1 and uninstall.ps1."
+
+    # The certificate and the note telling IT what to do with it go inside the
+    # zip, not only beside it on the release page: the zip is what gets
+    # forwarded, copied to a share or handed over on a USB stick, and whoever
+    # receives it should not have to come back to the packager for the one
+    # file that stops the warnings. They live in src\dist on the packaging
+    # machine (the same files release.ps1 attaches to the release), not in the
+    # repository -- the certificate is the packager's to export. release.ps1
+    # refuses a zip without them, so a missing one is a warning here and a
+    # stop there, rather than a build thrown away over a text file.
+    $sidecarDir = Join-Path $src "dist"
+    foreach ($name in @("PanoptoScheduler-CodeSigning.cer", "Code-signing-certificate-for-IT.txt")) {
+        $sidecar = Join-Path $sidecarDir $name
+        if (Test-Path -LiteralPath $sidecar) {
+            Copy-Item -LiteralPath $sidecar -Destination (Join-Path $publish $name) -Force
+            Write-Host "  Added $name."
+        } else {
+            Write-Warning "No $sidecar -- the zip will not carry it, and release.ps1 will refuse to ship the zip until it does."
+        }
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
