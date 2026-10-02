@@ -91,8 +91,22 @@ public sealed class PanoptoSoapClient(
     public string? AuthCookie { get; set; }
 
     /// <summary>
-    /// Set once the stale-cookie retry has been spent, so it can never happen
-    /// a second time however many calls go on to fail.
+    /// Set once the stale-cookie retry has been spent, so it cannot happen a
+    /// second time however many calls go on to fail <i>in the same faulting
+    /// episode</i>.
+    ///
+    /// <para><b>Re-armed when the episode is over, and only then.</b> It used to
+    /// be spent once for the client's lifetime, which is the whole working day:
+    /// one read fault in the morning, and when the cookie expired in the
+    /// afternoon every safe-to-retry read faulted for good, because the one
+    /// thing that would have healed it — a fresh exchange — was already used
+    /// up. Two things end an episode. A retry whose fresh cookie then
+    /// succeeds: the fault was the cookie, the exchange fixed it, and the next
+    /// expiry is a new problem deserving the same one-shot cure. And a new
+    /// session (<see cref="ForgetSession"/>): a different sign-in owes nothing
+    /// to the last one's faults. A retry that faults again does <i>not</i>
+    /// re-arm, so a bulk run whose rows are wrong still costs two exchanges in
+    /// total, not one per row.</para>
     /// </summary>
     private int _cookieRetried;
     public const string RemoteRecorderManagementPath =
@@ -152,7 +166,8 @@ public sealed class PanoptoSoapClient(
             // The retry is claimed atomically, not checked then set: two
             // concurrent faults can both pass a plain read, and each would run
             // its own legacyLogin — the amplification the flag exists to
-            // prevent. Once, per client, is the contract.
+            // prevent. Once per faulting episode is the contract; see
+            // _cookieRetried for what ends one.
             if (cookies is null || !safeToRetry || Interlocked.Exchange(ref _cookieRetried, 1) != 0)
             {
                 // A write drops the cookie on its way out, so the next call
@@ -176,9 +191,33 @@ public sealed class PanoptoSoapClient(
             cookie = await EnsureCookieAsync(ct).ConfigureAwait(false);
 
             // Not caught: if this one faults too, the caller gets the real
-            // reason rather than a retry loop's worth of noise.
-            return await AttemptAsync(path, service, request, cookie, safeToRetry, ct).ConfigureAwait(false);
+            // reason rather than a retry loop's worth of noise — and the retry
+            // stays spent, which is what keeps a faulting run at two exchanges.
+            var result = await AttemptAsync(path, service, request, cookie, safeToRetry, ct).ConfigureAwait(false);
+
+            // The fresh cookie worked, so the fault was the stale one and this
+            // episode is over. Re-armed for the next expiry; see _cookieRetried.
+            Interlocked.Exchange(ref _cookieRetried, 0);
+
+            return result;
         }
+    }
+
+    /// <summary>
+    /// Drops the cookie, as <see cref="InvalidateAuthCookie"/> does, and
+    /// re-arms the stale-cookie retry: for sign-in and sign-out, where what
+    /// follows is a different session.
+    ///
+    /// <para>Kept apart from <see cref="InvalidateAuthCookie"/> on purpose.
+    /// That one also runs on the fault paths — when a write faults, and just
+    /// before a retry fetches — and re-arming there would hand every later
+    /// read in a faulting run its own legacyLogin, the amplification the flag
+    /// exists to prevent.</para>
+    /// </summary>
+    public void ForgetSession()
+    {
+        InvalidateAuthCookie();
+        Interlocked.Exchange(ref _cookieRetried, 0);
     }
 
     /// <summary>

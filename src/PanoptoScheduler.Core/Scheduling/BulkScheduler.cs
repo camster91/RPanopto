@@ -374,8 +374,8 @@ public sealed class BulkScheduler(
     ///
     /// <para><see cref="Note"/> is empty for the ordinary cases — a folder that
     /// was found, or one that genuinely is not there. It carries a sentence only
-    /// when the listing stopped short, where "was not found" would be a claim this
-    /// app is not entitled to make.</para>
+    /// when the listing stopped short or the hint named several folders, where
+    /// "was not found" would be a claim this app is not entitled to make.</para>
     /// </summary>
     private sealed record FolderResolution(PanoptoFolder? Folder, string Note);
 
@@ -417,6 +417,16 @@ public sealed class BulkScheduler(
             resolution = new FolderResolution(
                 null,
                 "the folder list was incomplete, so it may exist");
+        }
+        catch (AmbiguousFolderException ex)
+        {
+            // The same safe fallback, for the same reason, and again with its
+            // own sentence: "was not found" would send the operator hunting for
+            // a typo, when the row's real problem is that it names several
+            // folders at once.
+            resolution = new FolderResolution(
+                null,
+                $"'{key}' is part of {ex.Candidates.Count} folder names, so none was guessed");
         }
 
         cache[key] = resolution;

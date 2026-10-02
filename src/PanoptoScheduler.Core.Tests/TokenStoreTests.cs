@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using PanoptoScheduler.Core.Auth;
+using PanoptoScheduler.Core.Clients;
 using PanoptoScheduler.Core.Configuration;
 
 namespace PanoptoScheduler.Core.Tests;
@@ -317,6 +318,129 @@ public class AuthenticatorTokenCacheTests
         // Nothing to refresh with, so the user must sign in again.
         Assert.False(auth.Restore());
         await Assert.ThrowsAsync<InvalidOperationException>(() => auth.GetValidAccessTokenAsync());
+    }
+
+    /// <summary>Answers every token request with one status and body.</summary>
+    private sealed class StatusTokenEndpoint(HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            });
+    }
+
+    /// <summary>
+    /// Holds the token response until the test lets it go, so a sign-out can be
+    /// placed exactly between the refresh being sent and its answer arriving.
+    /// </summary>
+    private sealed class HeldTokenEndpoint(string json) : HttpMessageHandler
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
+    private static FakeTokenStore ExpiredSession()
+    {
+        var store = new FakeTokenStore();
+        store.Save(Options().TenantUrl, "client-a",
+            new TokenSet("stale-access", "good-refresh", DateTimeOffset.UtcNow.AddMinutes(-5)));
+        return store;
+    }
+
+    /// <summary>
+    /// The reported bug: every non-2xx from the token endpoint was read as "this
+    /// refresh token is revoked", and the session — memory and the DPAPI cache —
+    /// was thrown away. A Panopto maintenance window's 503, or a 429 under load,
+    /// says nothing about the token; clearing it turned an hour's downtime into
+    /// a browser sign-in for everyone working through it.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task A_transient_token_endpoint_failure_keeps_the_saved_session(HttpStatusCode status)
+    {
+        var store = ExpiredSession();
+        var http = new HttpClient(new StatusTokenEndpoint(status, "<html>down for maintenance</html>"));
+
+        await using var auth = new OAuthPkceAuthenticator(Options(), http, store);
+        Assert.True(auth.Restore());
+
+        var failure = await Assert.ThrowsAsync<PanoptoRequestException>(() => auth.GetValidAccessTokenAsync());
+        Assert.Equal(status, failure.Status);
+
+        // Nothing cleared: the refresh token is still on disk and in memory,
+        // so the next attempt — or the next launch — can try it again.
+        Assert.Equal(0, store.Clears);
+        Assert.Equal("good-refresh", store.Load(Options().TenantUrl, "client-a")!.RefreshToken);
+        Assert.True(auth.HasStoredSession);
+    }
+
+    /// <summary>
+    /// The other half, which must keep working: a grant the server actually
+    /// refuses is dead, and keeping it would re-send it once per row.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task A_refused_refresh_token_ends_the_session(HttpStatusCode status)
+    {
+        var store = ExpiredSession();
+        var http = new HttpClient(new StatusTokenEndpoint(status, """{"error":"invalid_grant"}"""));
+
+        await using var auth = new OAuthPkceAuthenticator(Options(), http, store);
+        Assert.True(auth.Restore());
+
+        await Assert.ThrowsAsync<TokenRefusedException>(() => auth.GetValidAccessTokenAsync());
+
+        Assert.Equal(1, store.Clears);
+        Assert.Null(store.Load(Options().TenantUrl, "client-a"));
+        Assert.False(auth.HasStoredSession);
+    }
+
+    /// <summary>
+    /// Sign-out does not take the refresh gate, so a refresh already on the wire
+    /// used to come back after it, assign its tokens and persist them — the
+    /// operator who had just signed out was signed back in, and the next launch
+    /// resumed them from disk.
+    /// </summary>
+    [Fact]
+    public async Task A_refresh_that_lands_after_sign_out_does_not_sign_back_in()
+    {
+        var store = ExpiredSession();
+        var endpoint = new HeldTokenEndpoint(
+            """{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}""");
+        var http = new HttpClient(endpoint);
+
+        await using var auth = new OAuthPkceAuthenticator(Options(), http, store);
+        Assert.True(auth.Restore());
+
+        var refresh = auth.GetValidAccessTokenAsync();
+        await endpoint.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        auth.SignOut();
+        endpoint.Release.SetResult();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => refresh);
+
+        Assert.False(auth.IsAuthenticated);
+        Assert.False(auth.HasStoredSession);
+        Assert.Null(store.Load(Options().TenantUrl, "client-a"));
     }
 }
 

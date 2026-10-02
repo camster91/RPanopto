@@ -240,6 +240,56 @@ public class LegacyCookieTests
     }
 
     /// <summary>
+    /// The retry was once spent for the client's whole lifetime: a stale cookie
+    /// healed in the morning, and when the fresh one expired in the afternoon
+    /// every read faulted for good. A retry whose fresh cookie works has ended
+    /// its episode, so the next expiry gets the same one-shot cure.
+    /// </summary>
+    [Fact]
+    public async Task A_healed_cookie_leaves_the_retry_available_for_the_next_expiry()
+    {
+        var (soap, handler) = Build(
+            // Morning: the first cookie is stale, the retry heals it.
+            () => Cookie(".ASPXAUTH=morning-stale"), Fault,
+            () => Cookie(".ASPXAUTH=morning-fresh"), Ok,
+            // Afternoon: that cookie has expired in turn.
+            Fault,
+            () => Cookie(".ASPXAUTH=afternoon-fresh"), Ok);
+
+        await ListAsync(soap);
+        await ListAsync(soap);
+
+        Assert.Equal(3, handler.CountOf("legacyLogin"));
+
+        var calls = handler.Requests.Where(r => r.Path.Contains("RemoteRecorderManagement")).ToList();
+        Assert.Equal(".ASPXAUTH=afternoon-fresh", calls[^1].Cookie);
+    }
+
+    /// <summary>
+    /// A retry that faults again stays spent — that is what bounds a faulting
+    /// run — but a new session owes nothing to the last one's faults.
+    /// </summary>
+    [Fact]
+    public async Task A_new_session_gets_its_own_retry()
+    {
+        var (soap, handler) = Build(
+            () => Cookie(CookieHeader), Fault,
+            () => Cookie(CookieHeader), Fault,
+            // After ForgetSession: a fresh exchange, a stale-looking fault, and
+            // a retry that heals it.
+            () => Cookie(".ASPXAUTH=next-1"), Fault,
+            () => Cookie(".ASPXAUTH=next-2"), Ok);
+
+        await Assert.ThrowsAsync<PanoptoSoapFaultException>(() => ListAsync(soap));
+
+        soap.ForgetSession();
+
+        await ListAsync(soap);
+
+        Assert.Equal(4, handler.CountOf("legacyLogin"));
+    }
+
+    /// <summary>
     /// An exchange that returns no <c>.ASPXAUTH</c> must fail loudly. Carrying
     /// on with no cookie is the silent-anonymous-request failure mode this whole
     /// class exists to prevent.
