@@ -296,6 +296,13 @@ public sealed class BulkSessionEditor(
             // that is not broken.
             return Finish([.. targets.Select(t => Fail(t.Id, t.CurrentName, ex.Message))], audit);
         }
+        catch (AmbiguousFolderException ex)
+        {
+            // A bulk move is the caller that needs certainty, so a hint that
+            // names several folders refuses the move rather than picking one.
+            // The message lists them, which is the operator's next step.
+            return Finish([.. targets.Select(t => Fail(t.Id, t.CurrentName, ex.Message))], audit);
+        }
 
         if (folder is null)
         {

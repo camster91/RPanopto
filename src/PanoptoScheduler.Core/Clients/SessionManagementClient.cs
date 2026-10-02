@@ -14,6 +14,29 @@ public sealed record PanoptoFolder
 }
 
 /// <summary>
+/// A folder hint that matched no folder exactly and several by containment, so
+/// picking one would be a guess.
+///
+/// <para><b>Thrown rather than returned as null,</b> like
+/// <see cref="ListingIncompleteException"/>: null is the statement "no such
+/// folder", and a caller handed it would report the hint as not found — sending
+/// the operator to look for a typo in a row whose real problem is that it names
+/// too much.</para>
+/// </summary>
+public sealed class AmbiguousFolderException(string hint, IReadOnlyList<string> candidates)
+    : Exception(
+        $"'{hint}' is part of {candidates.Count} folder names ("
+        + string.Join(", ", candidates.Take(5).Select(c => $"'{c}'"))
+        + (candidates.Count > 5 ? ", …" : string.Empty)
+        + "), so none was picked. Give the folder's full name or its id.")
+{
+    public string Hint { get; } = hint;
+
+    /// <summary>Every folder name that contained the hint.</summary>
+    public IReadOnlyList<string> Candidates { get; } = candidates;
+}
+
+/// <summary>
 /// Session and folder operations — renaming, moving, deleting.
 ///
 /// <para>Separate from <see cref="RemoteRecorderClient"/> because it is a
@@ -70,7 +93,8 @@ public sealed class SessionManagementClient(PanoptoSoapClient soap)
     /// column, so both are tried — the same order the original uploader used.
     /// Matching is exact and case-insensitive first; a containment match is only a
     /// fallback, so a hint that names a folder exactly never resolves to a
-    /// different one that merely contains the words.</para>
+    /// different one that merely contains the words — and it is taken only when
+    /// it is the one such folder in a listing that was read to the end.</para>
     /// </summary>
     /// <exception cref="ListingIncompleteException">
     /// The hint matched nothing in a listing that stopped short. Symmetric with
@@ -78,6 +102,14 @@ public sealed class SessionManagementClient(PanoptoSoapClient soap)
     /// reason: null is the statement "no such folder exists", and a truncated read
     /// is not entitled to make it. The caller's next move differs too — a missing
     /// folder is a mistake in the row, an unread listing is a mistake here.
+    /// Also thrown when nothing matched exactly and the listing stopped short,
+    /// even if something matched partially: an exact match may be on a page
+    /// that was never read.
+    /// </exception>
+    /// <exception cref="AmbiguousFolderException">
+    /// Nothing matched exactly and more than one folder name contains the hint.
+    /// Not null, for the same reason as above: null says "no such folder", and
+    /// several is the opposite of none.
     /// </exception>
     public async Task<PanoptoFolder?> FindFolderAsync(string hint, CancellationToken ct = default)
     {
@@ -93,16 +125,33 @@ public sealed class SessionManagementClient(PanoptoSoapClient soap)
 
         var matches = await ListFoldersAsync(wanted, ct).ConfigureAwait(false);
 
-        var found = matches.FirstOrDefault(f => string.Equals(f.Name, wanted, StringComparison.OrdinalIgnoreCase))
-                    ?? matches.FirstOrDefault(f => f.Name.Contains(wanted, StringComparison.OrdinalIgnoreCase));
+        // An exact match is found whether or not the walk finished, so it is
+        // returned before the completeness check — throwing there would refuse
+        // a resolution that actually succeeded.
+        var exact = matches.FirstOrDefault(f => string.Equals(f.Name, wanted, StringComparison.OrdinalIgnoreCase));
+        if (exact is not null) return exact;
 
-        // Only on the not-found path. A folder that was found is found whether or
-        // not the walk finished, so throwing there would refuse a resolution that
-        // actually succeeded.
-        if (found is null && !matches.Complete)
+        // A containment match is not like that. It is only the answer if no
+        // exact match exists anywhere, and a listing that stopped short has not
+        // read everywhere: "MBA Year 1" on page one would have won over "MBA"
+        // sitting unread on page three. So an incomplete listing is the
+        // not-found-but-may-exist case here, partial match or not.
+        if (!matches.Complete)
             throw new ListingIncompleteException($"a folder matching '{wanted}'", matches.Count, matches.ReportedTotal);
 
-        return found;
+        var partial = matches
+            .Where(f => f.Name.Contains(wanted, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // More than one is a guess, and the order it would be made in is
+        // whatever order Panopto listed them — "MBA" against "MBA Year 1",
+        // "MBA Year 2" and "EMBA" lands recordings in whichever came first, and
+        // the row reads as resolved. Refused instead, by name, so the operator
+        // can write the folder out in full.
+        if (partial.Count > 1)
+            throw new AmbiguousFolderException(wanted, [.. partial.Select(f => f.Name)]);
+
+        return partial.Count == 1 ? partial[0] : null;
     }
 
     public Task UpdateSessionNameAsync(Guid sessionId, string name, CancellationToken ct = default)

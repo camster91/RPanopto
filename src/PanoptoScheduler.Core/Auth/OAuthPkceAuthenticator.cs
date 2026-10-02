@@ -1,6 +1,8 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
+using PanoptoScheduler.Core.Clients;
 
 namespace PanoptoScheduler.Core.Auth;
 
@@ -32,6 +34,32 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
     private readonly HttpClient _http;
     private readonly ITokenStore? _tokenStore;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>
+    /// Guards <see cref="_tokens"/> and <see cref="_sessionGeneration"/>
+    /// together, so "is this still the session I started from" and "replace it"
+    /// are one step. Separate from <see cref="_gate"/> on purpose: the gate is
+    /// held across a network round trip, and <see cref="SignOut"/> is a
+    /// synchronous UI action that must not wait on Panopto to answer.
+    /// </summary>
+    private readonly object _sessionLock = new();
+
+    /// <summary>
+    /// Bumped whenever the session is replaced from outside the refresh path —
+    /// by <see cref="SignOut"/>, and by a completed <see cref="SignInAsync"/>.
+    ///
+    /// <para><b>Why it exists.</b> A refresh is a network call made under
+    /// <see cref="_gate"/>, and sign-out never takes the gate. Without this, a
+    /// refresh that was already in flight when the operator signed out came
+    /// back, assigned its tokens, and persisted them: the person who had just
+    /// signed out was silently signed back in, and on the next launch
+    /// <see cref="Restore"/> resumed them from disk. The same race let a slow
+    /// refresh of the previous session overwrite a sign-in that had finished
+    /// meanwhile. A refresh now notes the generation before it asks, and keeps
+    /// its answer only if the generation is unchanged when the answer
+    /// arrives.</para>
+    /// </summary>
+    private long _sessionGeneration;
 
     private TokenSet? _tokens;
 
@@ -139,7 +167,7 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
         // Null on the carry slot: the authorization-code exchange issues the
         // first refresh token, and the response has to bring one or there is
         // nothing to carry forward from.
-        _tokens = await ExchangeAsync(new Dictionary<string, string>
+        var issued = await ExchangeAsync(new Dictionary<string, string>
         {
             ["grant_type"] = "authorization_code",
             ["code"] = code,
@@ -147,21 +175,40 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
             ["code_verifier"] = verifier,
         }, null, ct).ConfigureAwait(false);
 
-        Persist(_tokens);
+        // Committed unconditionally, unlike a refresh: finishing the browser
+        // step is the operator's own, most recent instruction, so a sign-out
+        // that happened while the browser was open does not outrank it. What
+        // the bump does is the other direction — a refresh of the previous
+        // session still in flight now finds the generation moved and discards
+        // its answer, instead of overwriting this sign-in with the old one.
+        lock (_sessionLock)
+        {
+            _sessionGeneration++;
+            _tokens = issued;
+            Persist(issued);
+        }
     }
 
     /// <summary>Drops tokens without contacting the server.</summary>
     public void SignOut()
     {
-        _tokens = null;
+        // Under the session lock, and bumping the generation, so a refresh
+        // already on the wire cannot land after this and put the tokens back —
+        // in memory or, worse, on disk where the next launch would find them.
+        // See _sessionGeneration.
+        lock (_sessionLock)
+        {
+            _sessionGeneration++;
+            _tokens = null;
 
-        try
-        {
-            _tokenStore?.Clear(_options.TenantUrl, _options.ClientId);
-        }
-        catch (Exception ex) when (IsCacheFailure(ex))
-        {
-            PersistenceWarning = $"Signed out, but the saved session could not be removed: {ex.Message}";
+            try
+            {
+                _tokenStore?.Clear(_options.TenantUrl, _options.ClientId);
+            }
+            catch (Exception ex) when (IsCacheFailure(ex))
+            {
+                PersistenceWarning = $"Signed out, but the saved session could not be removed: {ex.Message}";
+            }
         }
     }
 
@@ -182,45 +229,88 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            // Another caller may have refreshed while this one waited.
-            if (_tokens is { IsExpired: false } refreshed) return refreshed.AccessToken;
+            // The session this refresh starts from, read together with its
+            // generation, so the answer can be checked against it on return.
+            // A local, too: sign-out can null _tokens at any moment, and the
+            // refresh token has to be read from the set that was checked.
+            long generation;
+            TokenSet? session;
+            lock (_sessionLock)
+            {
+                generation = _sessionGeneration;
+                session = _tokens;
+            }
 
-            if (_tokens is null || !_tokens.CanRefresh)
+            // Another caller may have refreshed while this one waited.
+            if (session is { IsExpired: false } refreshed) return refreshed.AccessToken;
+
+            if (session is null || !session.CanRefresh)
                 throw new InvalidOperationException("Not signed in. Call SignInAsync first.");
+
+            // The previous refresh token rides along for RFC 6749 §6: a
+            // refresh grant may omit refresh_token, and dropping the old
+            // one then would persist a set that cannot refresh — the next
+            // launch would demand an interactive browser sign-in with the
+            // previously good token already overwritten on disk.
+            var previousRefreshToken = session.RefreshToken;
+            TokenSet renewed;
 
             try
             {
-                // The previous refresh token rides along for RFC 6749 §6: a
-                // refresh grant may omit refresh_token, and dropping the old
-                // one then would persist a set that cannot refresh — the next
-                // launch would demand an interactive browser sign-in with the
-                // previously good token already overwritten on disk.
-                var previousRefreshToken = _tokens.RefreshToken;
-                _tokens = await ExchangeAsync(new Dictionary<string, string>
+                renewed = await ExchangeAsync(new Dictionary<string, string>
                 {
                     ["grant_type"] = "refresh_token",
                     ["refresh_token"] = previousRefreshToken!,
                 }, previousRefreshToken, ct).ConfigureAwait(false);
             }
-            catch (InvalidOperationException)
+            catch (TokenRefusedException)
             {
                 // The server answered and refused this refresh token: it is
                 // revoked or spent, so retrying it can never succeed. Drop the
                 // whole session (memory and cache) so the next call reports
                 // "not signed in" instead of re-burning the same dead token
-                // once per row in every bulk run. Network-level failures
-                // (HttpRequestException, timeouts) are transient and do not
-                // clear anything — a retry may still succeed once Panopto
-                // answers again.
-                SignOut();
+                // once per row in every bulk run.
+                //
+                // Only this. A 5xx or 429 (PanoptoRequestException), a dropped
+                // connection (HttpRequestException), a timeout, or a success
+                // body that would not parse are transient or say nothing about
+                // the token, and clear nothing — a retry may still succeed once
+                // Panopto answers again, and the token on disk is the only
+                // thing that lets it do so without a browser. This used to
+                // catch InvalidOperationException, which every non-2xx was
+                // thrown as, so a maintenance window's 503 wiped good sessions.
+                //
+                // And only if the refused session is still the current one: a
+                // sign-in that completed meanwhile is a different session, and
+                // the old token's refusal says nothing about it.
+                lock (_sessionLock)
+                {
+                    if (_sessionGeneration == generation) SignOut();
+                }
+
                 throw;
             }
 
-            // Panopto may rotate the refresh token, so the cache has to follow
-            // the new one or the next launch presents a token that is already spent.
-            Persist(_tokens);
+            lock (_sessionLock)
+            {
+                // Signed out (or signed in afresh) while this was on the wire.
+                // Keeping the answer would undo that: the tokens would go back
+                // into memory and onto disk, and the next launch would resume
+                // a session the operator ended. The answer is discarded, and
+                // this caller is told what it would have been told had it
+                // started a moment later.
+                if (_sessionGeneration != generation)
+                    throw new InvalidOperationException(
+                        "Not signed in: the session ended while it was being refreshed.");
 
-            return _tokens.AccessToken;
+                _tokens = renewed;
+
+                // Panopto may rotate the refresh token, so the cache has to follow
+                // the new one or the next launch presents a token that is already spent.
+                Persist(renewed);
+            }
+
+            return renewed.AccessToken;
         }
         finally
         {
@@ -300,10 +390,23 @@ public sealed class OAuthPkceAuthenticator : IPanoptoAuthenticator, IAsyncDispos
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
             // Deliberately does not echo the submitted form, which carries the secret.
-            throw new InvalidOperationException(
-                $"Panopto rejected the token request ({(int)response.StatusCode}). " +
-                $"Verify the client secret and that the redirect URL is registered exactly. {body}");
+            //
+            // Split by status, because the refresh path acts on the difference:
+            // only a refusal of the grant itself (400/401 — see
+            // TokenRefusedException) may clear the saved session. A 5xx or 429
+            // is Panopto being unwell or busy, which says nothing about the
+            // refresh token; it goes out as the same request failure the other
+            // clients raise, so the summary reads "usually temporary" and the
+            // token on disk survives to be tried again.
+            if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized)
+                throw new TokenRefusedException(response.StatusCode, body);
+
+            throw new PanoptoRequestException(
+                _options.TokenEndpoint,
+                response.StatusCode,
+                body.Length > 500 ? body[..500] : body);
         }
 
         var payload = await response.Content

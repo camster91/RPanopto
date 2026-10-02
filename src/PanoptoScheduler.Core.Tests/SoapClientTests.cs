@@ -628,6 +628,53 @@ public class SoapClientTests
         Assert.Null(folder);
     }
 
+    /// <summary>
+    /// A hint contained in several folder names used to resolve to whichever
+    /// Panopto listed first, and the row read as resolved. Refused instead, with
+    /// the candidates named.
+    /// </summary>
+    [Fact]
+    public async Task Several_partial_folder_matches_are_refused_rather_than_guessed()
+    {
+        var (soap, _) = Build(SoapListings.FolderListing(
+            ("11111111-1111-1111-1111-111111111111", "MBA Year 1"),
+            ("22222222-2222-2222-2222-222222222222", "MBA Year 2")));
+
+        var ex = await Assert.ThrowsAsync<AmbiguousFolderException>(
+            () => new SessionManagementClient(soap).FindFolderAsync("MBA"));
+
+        Assert.Equal(["MBA Year 1", "MBA Year 2"], ex.Candidates);
+    }
+
+    /// <summary>One containing folder in a complete listing is still an answer.</summary>
+    [Fact]
+    public async Task A_single_partial_folder_match_in_a_complete_listing_resolves()
+    {
+        var (soap, _) = Build(SoapListings.FolderListing(
+            ("11111111-1111-1111-1111-111111111111", "MBA Year 1")));
+
+        var folder = await new SessionManagementClient(soap).FindFolderAsync("MBA");
+
+        Assert.Equal("MBA Year 1", folder!.Name);
+    }
+
+    /// <summary>
+    /// A partial match is only the answer when no exact one exists anywhere, and
+    /// a listing that stopped short has not looked everywhere — "MBA" itself may
+    /// be on the page never read.
+    /// </summary>
+    [Fact]
+    public async Task A_partial_folder_match_in_an_incomplete_listing_is_not_taken()
+    {
+        // Claims five folders and serves the same one on every page, so the walk
+        // ends on a repeat with four still owed: incomplete.
+        var (soap, _) = Build(SoapListings.FolderPage(5,
+            ("11111111-1111-1111-1111-111111111111", "MBA Year 1")));
+
+        await Assert.ThrowsAsync<ListingIncompleteException>(
+            () => new SessionManagementClient(soap).FindFolderAsync("MBA"));
+    }
+
     [Fact]
     public async Task Deletes_sessions()
     {
