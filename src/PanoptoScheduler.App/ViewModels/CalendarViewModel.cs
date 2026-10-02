@@ -1590,6 +1590,11 @@ public sealed class CalendarViewModel : ObservableObject
             IsSignedIn = true;
             signedIn = true;
             Status = "Signed in.";
+
+            // The schedule goes with the rest of the account's state: a refused
+            // session reaches here without SignOut, and if the read below fails
+            // the grid would otherwise go on showing the previous account's week.
+            _cache.Clear();
             ForgetAccountState();
             await LoadAsync(force: true);
 
