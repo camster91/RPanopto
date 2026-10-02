@@ -190,6 +190,13 @@ public sealed class CalendarViewModel : ObservableObject
     private DateOnly _weekStart;
 
     /// <summary>
+    /// The week the grid's columns were last built for, set by <see cref="Rebuild"/>.
+    /// A failed week navigation puts the header back to this — see
+    /// <see cref="NavigateToWeekAsync"/>.
+    /// </summary>
+    private DateOnly _drawnWeekStart;
+
+    /// <summary>
     /// The scheduled set, read once and drawn from for every week.
     ///
     /// <para><c>Data.svc</c> ignores its date parameters, so a read is always the
@@ -909,7 +916,23 @@ public sealed class CalendarViewModel : ObservableObject
             // The read comes first and the report second, because the read sets
             // the status line itself ("219 scheduled session(s)…") and would
             // otherwise overwrite what just happened with a count of the week.
-            await ReloadSelectedAsync().ConfigureAwait(true);
+            var reloaded = await ReloadSelectedAsync().ConfigureAwait(true);
+
+            if (!reloaded)
+            {
+                // The read failed and has said so — "Could not load the
+                // schedule." or "Panopto rejected the sign-in.", with the reason
+                // in Detail and the full chain in its tooltip. Overwriting that
+                // with "Renamed." used to leave a status line claiming all was
+                // well over a grid that had not been re-read, and setting Detail
+                // emptied the tooltip that said why. So the load's Detail stays,
+                // and the write is reported alongside the failure rather than in
+                // place of it: it did land, and the operator must not repeat it.
+                var failed = $"{did}, but the schedule could not be re-read: {Status}{trail}";
+                EditNote = failed;
+                Status = failed;
+                return;
+            }
 
             EditNote = note;
 
@@ -1087,7 +1110,11 @@ public sealed class CalendarViewModel : ObservableObject
     /// <para>Marks the cache stale and takes the same non-jumping reload an
     /// edit takes, so the cost is one read, and only for a window that was
     /// actually used. Skipped while signed out or mid-load: the cache stays
-    /// stale either way, so the next action reads instead.</para>
+    /// stale either way, so the next action reads instead. "Either way"
+    /// includes the load already in flight — it began before this mark, so
+    /// <see cref="ScheduleCache.Replace"/> keeps the mark rather than clearing
+    /// it, and the pages it walked before the bulk writes are not taken as
+    /// current.</para>
     ///
     /// <para>Reports its own failures through <see cref="LoadAsync"/>'s catch
     /// blocks; a caller in an async void handler should still guard it.</para>
@@ -1101,11 +1128,16 @@ public sealed class CalendarViewModel : ObservableObject
         await ReloadSelectedAsync().ConfigureAwait(true);
     }
 
-    private async Task ReloadSelectedAsync()
+    /// <returns>
+    /// <see cref="LoadAsync"/>'s answer: false means the status line already
+    /// carries the load's failure, which a caller about to report a write must
+    /// not paper over.
+    /// </returns>
+    private async Task<bool> ReloadSelectedAsync()
     {
         var keep = _detailsSessionId;
 
-        await LoadAsync(jumpToFirst: false).ConfigureAwait(true);
+        var loaded = await LoadAsync(jumpToFirst: false).ConfigureAwait(true);
 
         // Put back, because Rebuild may have found nothing to match it to: if the
         // session left the week — moved to another date, or deleted — the panel
@@ -1114,6 +1146,8 @@ public sealed class CalendarViewModel : ObservableObject
         // decide, instead of this deciding for it.
         _detailsSessionId = keep;
         NotifyDetailsChanged();
+
+        return loaded;
     }
 
     /// <summary>
@@ -1556,6 +1590,7 @@ public sealed class CalendarViewModel : ObservableObject
             IsSignedIn = true;
             signedIn = true;
             Status = "Signed in.";
+            ForgetAccountState();
             await LoadAsync(force: true);
 
             // Only surfaced after loading, so a storage problem never hides the
@@ -1605,7 +1640,8 @@ public sealed class CalendarViewModel : ObservableObject
     {
         var today = RoomToday();
         _weekStart = StartOfWeek(today);
-        _cache.Replace(new PagedResult<PanoptoSession>(DebugFixtureWeek.Sessions(today), complete: true));
+        _cache.Replace(new PagedResult<PanoptoSession>(DebugFixtureWeek.Sessions(today), complete: true),
+                       _cache.BeginRead());
 
         // Stale at once, so the fixture is never a cache anything navigates
         // from: a week button still goes to Panopto — and, with nobody signed
@@ -1811,12 +1847,43 @@ public sealed class CalendarViewModel : ObservableObject
         // Emptied, not just marked stale: the next account must not see this
         // one's schedule, even for the moment before its first read lands.
         _cache.Clear();
+        ForgetAccountState();
         Raise(nameof(ScheduleAge));
         IsSignedIn = false;
         Rebuild();
 
         Status = "Signed out.";
         Detail = _panopto.PersistenceWarning ?? "Sign in to load the schedule.";
+    }
+
+    /// <summary>
+    /// Drops everything the calendar learned from the account that was signed
+    /// in, other than the schedule itself (which <see cref="ScheduleCache.Clear"/>
+    /// and the forced read handle).
+    ///
+    /// <para><b>Why each of these.</b> The room list is read once per sign-in —
+    /// that is what <see cref="_roomsLoaded"/> means — so leaving it set
+    /// carried the last account's rooms, its "stopped short" caveat and its
+    /// count into the next one's legend, with no read ever made for the new
+    /// account. <see cref="_moveRefused"/> is a fact about an account's access
+    /// level, not about a session: a block Panopto would not let a Videographer
+    /// retime is one an administrator can, and keeping the set would leave the
+    /// drag switched off for them with nothing on screen saying why. The blocks
+    /// themselves read the set in <c>ToBlock</c>, so the next rebuild clears
+    /// theirs.</para>
+    ///
+    /// <para>Called from sign-out and before the forced load in
+    /// <see cref="SignInAsync"/>, because a rejected token reaches sign-in
+    /// through the prompt without ever passing through sign-out — and the
+    /// account that signs in there need not be the one that was refused.</para>
+    /// </summary>
+    private void ForgetAccountState()
+    {
+        _roomsLoaded = false;
+        _tenantRooms = [];
+        _roomsComplete = true;
+        _roomsRead = 0;
+        _moveRefused.Clear();
     }
 
     /// <summary>
@@ -1969,10 +2036,29 @@ public sealed class CalendarViewModel : ObservableObject
         }
         catch (PanoptoSoapFaultException ex)
         {
-            // Panopto answered and said no. On the live tenant this is what a
-            // session this account can see but not retime looks like, and it is
-            // the one refusal worth remembering: the operator can drag that block
-            // all day and it will never work.
+            // Stale, not trusted — the same rule ApplyEditAsync follows for a
+            // Failed row: a SOAP write can land and then fault, so a fault does
+            // not prove the tenant still has the session where the grid draws
+            // it. The next action reads to find out.
+            _cache.MarkStale();
+
+            if (!IsAccessRefusal(ex))
+            {
+                // Panopto said no, but not "never": a clash, a recorder in use,
+                // a session that changed under the drag. Those can succeed on
+                // the next attempt, so the drag stays on offer — remembering
+                // every fault as a refusal switched it off for the rest of the
+                // sign-in over what may have been a one-off.
+                Status = "Panopto would not move it.";
+                (Detail, DetailTooltip) = Problem.Describe("Panopto would not move it.", ex);
+                Rebuild();
+                return false;
+            }
+
+            // An access-level refusal. On the live tenant this is what a session
+            // this account can see but not retime looks like, and it is the one
+            // refusal worth remembering: the operator can drag that block all
+            // day and it will never work.
             _moveRefused.Add(id);
 
             Status = "Panopto refused to move it.";
@@ -1998,8 +2084,8 @@ public sealed class CalendarViewModel : ObservableObject
             Status = "Could not move the recording.";
             (Detail, DetailTooltip) = Problem.Describe("Could not move the recording.", ex);
 
-            // Unlike the refusal above, this is not a definite no: the write may
-            // have landed before the failure, so the next action reads.
+            // Not a definite no, any more than a fault is: the write may have
+            // landed before the failure, so the next action reads.
             _cache.MarkStale();
 
             // The grid still shows the old position, so it is consistent with
@@ -2013,38 +2099,54 @@ public sealed class CalendarViewModel : ObservableObject
         }
     }
 
-    private async Task ShiftWeekAsync(int days)
+    /// <summary>
+    /// Whether a fault is Panopto refusing this account the session, rather than
+    /// refusing this particular move.
+    ///
+    /// <para>Matched on the text because that is the only part of the fault
+    /// this app has measured: the refusal reads <c>Invalid Session Id … at
+    /// accessLevel: Videographer</c> (and <c>…: Creator</c> for a description
+    /// write — see <c>BulkSessionEditor.SetDescriptionAsync</c>), and nothing
+    /// is known about its fault code. <c>accessLevel</c> is the part that names the
+    /// account's role, so it is what is required; "Invalid Session Id" alone is
+    /// also what a session deleted under the drag would plausibly say, and
+    /// switching the drag off for that would be remembering the wrong
+    /// thing.</para>
+    /// </summary>
+    private static bool IsAccessRefusal(PanoptoSoapFaultException fault) =>
+        fault.RawMessage.Contains("accessLevel", StringComparison.OrdinalIgnoreCase);
+
+    private Task ShiftWeekAsync(int days) => NavigateToWeekAsync(_weekStart.AddDays(days));
+
+    private Task GoToThisWeekAsync() => NavigateToWeekAsync(StartOfWeek(RoomToday()));
+
+    private async Task NavigateToWeekAsync(DateOnly to)
     {
         // Rolled back on failure rather than left advanced: LoadAsync does not
         // clear the old week's sessions when it cannot read new ones, so the
         // grid keeps drawing the week it had — and a header reading "Sep 28 –
         // Oct 4" over columns drawing Sep 21–27 is a lie about which week is on
         // screen, with the details panel offering Rename/Move against blocks
-        // the header does not describe. `from`, not the shifted value, is what
-        // the screen is actually still holding.
+        // the header does not describe.
+        //
+        // Rolled back to the week the grid was last drawn for, not to the week
+        // this navigation started from. The two used to be assumed equal, and
+        // a 401 is where they are not: LoadAsync awaits the sign-in prompt
+        // before returning false, a sign-in there runs its own forced load —
+        // which jumps to the first booked week and rebuilds the grid for it —
+        // and restoring `from` afterwards put the old header over that new
+        // grid. The drawn week is right in every case: unchanged after a plain
+        // failure, the jumped-to week after a nested sign-in, and whatever a
+        // resize mid-load redrew.
         //
         // Not told to jump: the jump to the first booked week overwrote the
         // week just chosen, so Next and Previous snapped straight back.
-        var from = _weekStart;
-        _weekStart = _weekStart.AddDays(days);
+        _weekStart = to;
         Raise(nameof(WeekLabel));
 
-        if (!await LoadAsync(jumpToFirst: false))
+        if (!await LoadAsync(jumpToFirst: false) && _weekStart != _drawnWeekStart)
         {
-            _weekStart = from;
-            Raise(nameof(WeekLabel));
-        }
-    }
-
-    private async Task GoToThisWeekAsync()
-    {
-        var from = _weekStart;
-        _weekStart = StartOfWeek(RoomToday());
-        Raise(nameof(WeekLabel));
-
-        if (!await LoadAsync(jumpToFirst: false))
-        {
-            _weekStart = from;
+            _weekStart = _drawnWeekStart;
             Raise(nameof(WeekLabel));
         }
     }
@@ -2184,8 +2286,15 @@ public sealed class CalendarViewModel : ObservableObject
     public async Task<bool> EnsureFreshAsync(bool force = false)
     {
         if (!force && !_cache.NeedsRead) return true;
+
+        // Taken before the request, not after: a MarkStale that lands while the
+        // walk is in flight — the bulk window closing over this load, whose
+        // AfterExternalWritesAsync then skips its own reload because IsBusy is
+        // set — has to outlive this read, or its writes would be drawn as
+        // missing from a cache that calls itself current.
+        var startedAt = _cache.BeginRead();
         var read = await _panopto.Reads.GetAllSessionsAsync([1]);
-        _cache.Replace(read);
+        _cache.Replace(read, startedAt);
         Raise(nameof(ScheduleAge));
         return true;
     }
@@ -2281,6 +2390,7 @@ public sealed class CalendarViewModel : ObservableObject
         // purpose: filtering to a room must not recolour it, or the stripe just
         // clicked stops meaning what it meant a moment ago.
         var columns = CalendarLayout.ArrangeByDay(VisibleSessions(), _weekStart, DaysInWeek);
+        _drawnWeekStart = _weekStart;
         var today = RoomToday();
 
         foreach (var (day, placed) in columns)

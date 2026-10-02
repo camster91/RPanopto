@@ -18,7 +18,7 @@ public class ScheduleCacheTests
     private static ScheduleCache Loaded(params PanoptoSession[] sessions)
     {
         var cache = new ScheduleCache(() => _now);
-        cache.Replace(new PagedResult<PanoptoSession>(sessions, true, sessions.Length));
+        cache.Replace(new PagedResult<PanoptoSession>(sessions, true, sessions.Length), cache.BeginRead());
         return cache;
     }
 
@@ -45,7 +45,50 @@ public class ScheduleCacheTests
         var cache = Loaded(Session(A, "x", new DateTime(2026, 9, 29, 9, 0, 0)));
         cache.MarkStale();
         Assert.True(cache.NeedsRead);
-        cache.Replace(new PagedResult<PanoptoSession>([], true, 0));
+        cache.Replace(new PagedResult<PanoptoSession>([], true, 0), cache.BeginRead());
+        Assert.False(cache.NeedsRead);
+    }
+
+    [Fact]
+    public void A_MarkStale_during_a_read_survives_that_read()
+    {
+        // The bulk window closing while the calendar is mid-load: its writes may
+        // not be in the pages already walked, so that read must not clear the mark.
+        var cache = Loaded(Session(A, "x", new DateTime(2026, 9, 29, 9, 0, 0)));
+        cache.MarkStale();
+
+        var token = cache.BeginRead();
+        cache.MarkStale();
+        cache.Replace(
+            new PagedResult<PanoptoSession>([Session(B, "y", new DateTime(2026, 9, 29, 10, 0, 0))], true, 1),
+            token);
+
+        Assert.True(cache.NeedsRead);
+
+        // The read's rows are still taken — they are newer than what was held.
+        Assert.Equal(B.ToString("D"), Assert.Single(cache.Sessions).SessionID);
+    }
+
+    [Fact]
+    public void A_MarkStale_before_the_read_started_is_cleared_by_it()
+    {
+        var cache = Loaded(Session(A, "x", new DateTime(2026, 9, 29, 9, 0, 0)));
+        cache.MarkStale();
+        var token = cache.BeginRead();
+        cache.Replace(new PagedResult<PanoptoSession>([], true, 0), token);
+        Assert.False(cache.NeedsRead);
+    }
+
+    [Fact]
+    public void The_next_read_after_a_surviving_mark_clears_it()
+    {
+        var cache = Loaded();
+        var first = cache.BeginRead();
+        cache.MarkStale();
+        cache.Replace(new PagedResult<PanoptoSession>([], true, 0), first);
+        Assert.True(cache.NeedsRead);
+
+        cache.Replace(new PagedResult<PanoptoSession>([], true, 0), cache.BeginRead());
         Assert.False(cache.NeedsRead);
     }
 
@@ -87,7 +130,7 @@ public class ScheduleCacheTests
     public void Incomplete_read_is_remembered()
     {
         var cache = new ScheduleCache(() => _now);
-        cache.Replace(new PagedResult<PanoptoSession>([], false, 900));
+        cache.Replace(new PagedResult<PanoptoSession>([], false, 900), cache.BeginRead());
         Assert.False(cache.Complete);
     }
 
