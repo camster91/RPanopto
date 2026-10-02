@@ -203,6 +203,68 @@ public class SoapTimeTests
         Assert.Equal($"MGT1000 Lecture ({expected})", SoapXml.DescribeConflict(element));
     }
 
+    /// <summary>
+    /// A SOAP value that carries <c>Z</c> or an offset names an instant, and is
+    /// shown on the room's clock. Read by its digits, a 09:00 Toronto clash sent
+    /// as <c>13:00Z</c> was shown as 13:00 — a time nobody booked. 10 March 2026 is
+    /// after the spring-forward date, so Toronto is four hours behind UTC.
+    /// </summary>
+    [Theory]
+    [InlineData("2026-03-10T13:00:00Z")]
+    [InlineData("2026-03-10T13:00:00.000Z")]
+    [InlineData("2026-03-10T09:00:00-04:00")]
+    [InlineData("2026-03-10T14:00:00+01:00")]
+    public void A_soap_value_with_an_offset_is_shown_on_the_rooms_clock(string raw)
+        => Assert.Equal(new DateTime(2026, 3, 10, 9, 0, 0),
+            SoapXml.DateTime(Time(raw), "StartTime", Toronto));
+
+    /// <summary>
+    /// What the zone does not touch: a bare value and WCF's form keep the measured
+    /// digits-only rule, and a caller that passes no zone gets exactly what it
+    /// always had.
+    /// </summary>
+    [Fact]
+    public void Values_without_an_offset_and_callers_without_a_zone_are_unchanged()
+    {
+        Assert.Equal(new DateTime(2026, 3, 10, 14, 30, 0),
+            SoapXml.DateTime(Time("2026-03-10T14:30:00"), "StartTime", Toronto));
+        Assert.Equal(WallClockOf(TwoPmMs),
+            SoapXml.DateTime(Time($"/Date({TwoPmMs}-0400)/"), "StartTime", Toronto));
+        Assert.Equal(new DateTime(2026, 3, 10, 13, 0, 0),
+            SoapXml.DateTime(Time("2026-03-10T13:00:00Z"), "StartTime"));
+    }
+
+    /// <summary>
+    /// End to end through the client that made the call: a clash in a booking's
+    /// reply is described in the zone the request was converted with.
+    /// </summary>
+    [Fact]
+    public async Task A_clash_reported_in_utc_is_described_on_the_rooms_clock()
+    {
+        var handler = new ScriptedSoapHandler().Respond("ScheduleRecording", """
+            <ScheduleRecordingResponse xmlns="http://tempuri.org/"><ScheduleRecordingResult>
+              <ConflictsExist>true</ConflictsExist>
+              <ConflictingSessions>
+                <ScheduledRecordingInfo>
+                  <SessionName>MGT1000 Lecture</SessionName>
+                  <StartTime>2026-03-10T13:00:00Z</StartTime>
+                </ScheduledRecordingInfo>
+              </ConflictingSessions>
+            </ScheduleRecordingResult></ScheduleRecordingResponse>
+            """);
+
+        var http = new HttpClient(handler) { BaseAddress = new Uri("https://rotman.ca.panopto.com") };
+        var soap = new PanoptoSoapClient(http, new PanoptoScheduler.Core.RateLimiting.RateLimiterRegistry(), new StubAuthenticator());
+        var recorders = new RemoteRecorderClient(soap, Toronto);
+
+        var result = await recorders.ScheduleAsync(
+            "Lecture", Guid.NewGuid(), false,
+            new DateTime(2026, 3, 10, 9, 0, 0), new DateTime(2026, 3, 10, 10, 0, 0),
+            [Guid.NewGuid()]);
+
+        Assert.Equal("MGT1000 Lecture (Tue 10 Mar 09:00)", Assert.Single(result.Conflicts));
+    }
+
     [Fact]
     public void A_clash_with_no_readable_time_still_names_the_session()
         => Assert.Equal("MGT1000 Lecture (already booked)",

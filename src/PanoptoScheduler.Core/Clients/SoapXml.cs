@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using PanoptoScheduler.Core.Json;
 
@@ -13,7 +14,7 @@ namespace PanoptoScheduler.Core.Clients;
 /// whenever a field moves between API versions. Local names have been stable
 /// across every version in use.</para>
 /// </summary>
-internal static class SoapXml
+internal static partial class SoapXml
 {
     /// <summary>An operation element, in the <c>tempuri.org</c> contract namespace.</summary>
     public static XElement Operation(string name, params XElement[] children)
@@ -109,10 +110,14 @@ internal static class SoapXml
             .ToList();
 
     /// <summary>One line per clashing session, for the import report.</summary>
-    public static string DescribeConflict(XElement element)
+    /// <param name="roomZone">
+    /// The zone the rooms keep time in, for a clash time the tenant sends as an
+    /// instant. See <see cref="DateTime(XElement?, string, TimeZoneInfo?)"/>.
+    /// </param>
+    public static string DescribeConflict(XElement element, TimeZoneInfo? roomZone = null)
     {
         var name = Text(element, "SessionName");
-        var start = DateTime(element, "StartTime");
+        var start = DateTime(element, "StartTime", roomZone);
 
         if (name is null && start is null) return string.Empty;
 
@@ -132,12 +137,53 @@ internal static class SoapXml
     /// implementations of this, which is how the two came to disagree about the
     /// offset form. An unrecognised value returns null rather than throwing
     /// mid-batch.</para>
+    ///
+    /// <para><b>Except for an ISO value that names its own offset, when the room's
+    /// zone is known.</b> The digits-only rule was measured on <c>Data.svc</c>
+    /// reads, whose values carry no meaningful offset; nothing measured it for a
+    /// SOAP reply. And SOAP's <c>xs:dateTime</c> is the one place the tenant has
+    /// already been shown to mean what it says: a <c>Z</c> on the way in is UTC —
+    /// that is why <see cref="Scheduling.RoomClock.ToWire"/> exists — so a
+    /// <c>Z</c> on the way out is read the same way. Taking its digits as they
+    /// stand showed a 09:00 Toronto clash as 13:00, a time at which nothing is
+    /// booked, which sends the operator looking for the wrong recording. A value
+    /// with no offset, and WCF's <c>/Date(…)/</c> form, keep the measured rule,
+    /// as does every caller that passes no zone.</para>
     /// </summary>
-    public static DateTime? DateTime(XElement? parent, string localName)
-        => Text(parent, localName) is { } text
-           && WcfDateTimeConverter.TryParse(text, out var value)
-            ? value
-            : null;
+    /// <param name="roomZone">
+    /// The zone the rooms keep time in. Null keeps the digits-only reading for
+    /// every shape, which is what a caller with no zone to hand has always had.
+    /// </param>
+    public static DateTime? DateTime(XElement? parent, string localName, TimeZoneInfo? roomZone = null)
+    {
+        if (Text(parent, localName) is not { } text) return null;
+
+        if (roomZone is not null && TryReadInstant(text, out var instant))
+            return Scheduling.RoomClock.FromWire(instant, roomZone);
+
+        return WcfDateTimeConverter.TryParse(text, out var value) ? value : null;
+    }
+
+    /// <summary>
+    /// An ISO <c>xs:dateTime</c> that ends in <c>Z</c> or an explicit offset,
+    /// read as the instant it names. False for anything else, including a bare
+    /// ISO value — parsing that as a <see cref="DateTimeOffset"/> would stamp it
+    /// with this machine's offset, and this machine has nothing to say about the
+    /// room.
+    /// </summary>
+    private static bool TryReadInstant(string text, out DateTimeOffset instant)
+    {
+        instant = default;
+
+        return IsoWithOffset().IsMatch(text)
+               && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
+                   DateTimeStyles.RoundtripKind, out instant);
+    }
+
+    [GeneratedRegex(
+        @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex IsoWithOffset();
 
     // ---- Writing --------------------------------------------------------
 

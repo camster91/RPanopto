@@ -188,6 +188,26 @@ public sealed class BulkSessionEditor(
 
         public string? Warning => _run.Warning;
 
+        /// <summary>
+        /// Records a write that was cut off after it may have been sent, on the
+        /// way out of a run that is ending.
+        ///
+        /// <para>Written straight to the run rather than through the result list,
+        /// and with an outcome of its own rather than <c>Failed</c>. The list is
+        /// about to be dropped along with the exception, so a row added to it would
+        /// reach nothing; and <c>Failed</c> says "this did not happen", which is the
+        /// one thing nobody knows about it. The cursor is left where it is, because
+        /// no later <see cref="Record"/> follows a rethrow.</para>
+        /// </summary>
+        public void InFlight(Guid id, string currentName, string description, OperationCanceledException error)
+            => _run.Row(
+                id,
+                currentName,
+                "Unknown",
+                $"Outcome unknown (stopped in flight): '{currentName}': {description} The call had "
+                + $"been sent when it was cut off ({error.Message}), so it may or may not have "
+                + "gone through. Refresh to see where it stands.");
+
         public void Record(IReadOnlyList<SessionEditResult> results)
         {
             for (; _recorded < results.Count; _recorded++)
@@ -252,7 +272,7 @@ public sealed class BulkSessionEditor(
                 id, currentName, dryRun,
                 $"Rename to '{name}'.",
                 c => sessions.UpdateSessionNameAsync(id, name, c),
-                ct).ConfigureAwait(false));
+                audit, ct).ConfigureAwait(false));
 
             Report(progress, results, audit);
         }
@@ -391,7 +411,7 @@ public sealed class BulkSessionEditor(
             ct.ThrowIfCancellationRequested();
 
             results.Add(entry.Slot is { } slot
-                ? await RetimeOneAsync(slot, dryRun, nowUtc, ct).ConfigureAwait(false)
+                ? await RetimeOneAsync(slot, dryRun, nowUtc, audit, ct).ConfigureAwait(false)
                 : Fail(entry.Target.Id, entry.Target.CurrentName, entry.Refusal ?? string.Empty));
 
             Report(progress, results, audit);
@@ -432,7 +452,7 @@ public sealed class BulkSessionEditor(
         {
             ct.ThrowIfCancellationRequested();
 
-            results.Add(await RetimeOneAsync(row, dryRun, nowUtc, ct).ConfigureAwait(false));
+            results.Add(await RetimeOneAsync(row, dryRun, nowUtc, audit, ct).ConfigureAwait(false));
 
             Report(progress, results, audit);
         }
@@ -453,6 +473,7 @@ public sealed class BulkSessionEditor(
         SessionRetime row,
         bool dryRun,
         DateTime? nowUtc,
+        Audit audit,
         CancellationToken ct)
     {
         // Checked before the call rather than left to Panopto. A zero-length or
@@ -474,6 +495,19 @@ public sealed class BulkSessionEditor(
                 + "and the room has already gone past that.");
         }
 
+        // The spring-forward hour, checked before the call for the dry run's sake.
+        // The write refuses it inside RoomClock.ToWire, but a dry run never builds
+        // the write — so the preview approved a retime the run then failed on every
+        // row, and the preview is what the operator decided on. Both ends: a slot
+        // that starts at 22:00 the night before can still end inside the gap. The
+        // sentence is ToWire's own, so the preview and the run cannot disagree on
+        // the words either.
+        if ((RoomClock.MissingHour(row.Start, recorders.RoomZone)
+             ?? RoomClock.MissingHour(row.End, recorders.RoomZone)) is { } missing)
+        {
+            return Fail(row.Id, row.CurrentName, missing);
+        }
+
         return await ApplyAsync(
             row.Id, row.CurrentName, dryRun,
             $"Retime to {row.Start:ddd d MMM HH:mm}–{row.End:HH:mm}.",
@@ -481,7 +515,9 @@ public sealed class BulkSessionEditor(
             {
                 // Throws for a wall clock that does not exist — the spring-forward
                 // hour — with a message naming the date, which is exactly what an
-                // operator needs and is not something to re-word here.
+                // operator needs and is not something to re-word here. The check
+                // above already refuses it with the same words; this stays the
+                // backstop, since it is the one every write passes through.
                 var result = await recorders
                     .UpdateRecordingTimeAsync(row.Id, row.Start, row.End, c)
                     .ConfigureAwait(false);
@@ -493,7 +529,7 @@ public sealed class BulkSessionEditor(
                       + string.Join("; ", result.Conflicts) + "."
                     : " Moved, but Panopto reports a clash and did not say with what.";
             },
-            ct).ConfigureAwait(false);
+            audit, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -552,7 +588,7 @@ public sealed class BulkSessionEditor(
                 id, currentName, dryRun,
                 Describe(description, currentDescription),
                 c => sessions.UpdateSessionDescriptionAsync(id, description, c),
-                ct).ConfigureAwait(false));
+                audit, ct).ConfigureAwait(false));
 
             Report(progress, results, audit);
         }
@@ -677,7 +713,7 @@ public sealed class BulkSessionEditor(
                 id, currentName, dryRun,
                 isBroadcast ? "Turn webcasting on." : "Turn webcasting off.",
                 c => sessions.UpdateSessionIsBroadcastAsync(id, isBroadcast, c),
-                ct).ConfigureAwait(false));
+                audit, ct).ConfigureAwait(false));
 
             Report(progress, results, audit);
         }
@@ -705,6 +741,7 @@ public sealed class BulkSessionEditor(
         bool dryRun,
         string description,
         Func<CancellationToken, Task<string?>> apply,
+        Audit audit,
         CancellationToken ct)
     {
         if (dryRun)
@@ -718,8 +755,20 @@ public sealed class BulkSessionEditor(
 
             return Applied(id, currentName, description, note);
         }
+        catch (OperationCanceledException ex) when (PanoptoSoapClient.WriteMayHaveLeft(ex, ct))
+        {
+            // Still rethrown — the run is over, and the caller tells a timeout
+            // from a stop by this very exception — but not before the row is in
+            // the trail. The rethrow used to come first, so the one write whose
+            // fate nobody knows was the one write the trail never heard of, and
+            // the report that would have mentioned it never comes back.
+            audit.InFlight(id, currentName, description, ex);
+            throw;
+        }
         catch (OperationCanceledException)
         {
+            // The operator's stop, which lands before the send: nothing left this
+            // machine, so there is no row to record.
             throw;
         }
         catch (Exception ex)
@@ -739,12 +788,13 @@ public sealed class BulkSessionEditor(
         bool dryRun,
         string description,
         Func<CancellationToken, Task> apply,
+        Audit audit,
         CancellationToken ct)
         => ApplyAsync(id, currentName, dryRun, description, async c =>
         {
             await apply(c).ConfigureAwait(false);
             return null;
-        }, ct);
+        }, audit, ct);
 
     private static SessionEditResult WouldApply(Guid id, string currentName, string description) => new()
     {
@@ -819,6 +869,16 @@ public sealed class BulkSessionEditor(
         {
             await apply([.. chunk.Select(t => t.Id)], ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException ex) when (PanoptoSoapClient.WriteMayHaveLeft(ex, ct))
+        {
+            // Every session in the chunk, because the one call carried them all
+            // and this app cannot tell how far the server got. See ApplyAsync for
+            // why the row is written before the rethrow rather than never.
+            foreach (var (id, currentName) in chunk)
+                audit.InFlight(id, currentName, description, ex);
+
+            throw;
+        }
         catch (OperationCanceledException)
         {
             throw;
@@ -835,7 +895,7 @@ public sealed class BulkSessionEditor(
                 results.Add(await ApplyAsync(
                     id, currentName, dryRun: false, description,
                     c => apply([id], c),
-                    ct).ConfigureAwait(false));
+                    audit, ct).ConfigureAwait(false));
 
                 Report(progress, results, audit);
             }

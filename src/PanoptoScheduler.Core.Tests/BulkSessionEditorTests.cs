@@ -330,6 +330,39 @@ public class BulkSessionEditorTests
         Assert.DoesNotContain("UpdateRecordingTime", handler.Calls);
     }
 
+    /// <summary>
+    /// A retime preview into the spring-forward hour. The write refuses it in
+    /// <c>RoomClock.ToWire</c>, which a dry run never reaches, so the preview used
+    /// to approve a move the run then failed. Toronto rather than the pinned test
+    /// zone, which has no daylight saving to jump; the second row starts at an
+    /// hour that exists and only ends inside the gap.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_retime_into_the_hour_that_does_not_exist_is_refused_preview_or_not(bool dryRun)
+    {
+        var handler = new ScriptedSoapHandler().Respond("UpdateRecordingTime", "");
+        var http = new HttpClient(handler) { BaseAddress = new Uri("https://rotman.ca.panopto.com") };
+        var soap = new PanoptoSoapClient(http, new RateLimiterRegistry(), new StubAuthenticator());
+        var editor = new BulkSessionEditor(
+            new SessionManagementClient(soap),
+            new RemoteRecorderClient(soap, RoomClock.Resolve("America/Toronto")));
+
+        var report = await editor.RetimeAsync(
+            [
+                new SessionRetime(One, "Sunday", new DateTime(2026, 3, 8, 1, 30, 0), new DateTime(2026, 3, 8, 2, 30, 0)),
+                new SessionRetime(Two, "Overnight", new DateTime(2026, 3, 7, 22, 0, 0), new DateTime(2026, 3, 8, 2, 30, 0)),
+            ],
+            dryRun,
+            nowUtc: new DateTime(2026, 1, 5, 12, 0, 0, DateTimeKind.Utc));
+
+        Assert.Equal(2, report.Failed);
+        Assert.All(report.Results, r => Assert.Contains(
+            "There is no 2026-03-08 02:30 in America/Toronto", r.Message, StringComparison.Ordinal));
+        Assert.DoesNotContain("UpdateRecordingTime", handler.Calls);
+    }
+
     // ---- Bulk retime, over a calendar selection --------------------------
 
     /// <summary>One ticked recording, as the calendar hands it over.</summary>

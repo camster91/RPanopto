@@ -41,7 +41,14 @@ public sealed record ScheduledRecordingResult
     /// </summary>
     public Guid SessionId => SessionIds.Count > 0 ? SessionIds[0] : Guid.Empty;
 
-    public static ScheduledRecordingResult From(XElement? result)
+    /// <param name="result">The operation's result element, or null when it was nil.</param>
+    /// <param name="roomZone">
+    /// The zone the rooms keep time in, so a clash time the tenant sends as an
+    /// instant is shown on the room's clock rather than as UTC digits. The client
+    /// that made the call passes the zone it converted the request with; see
+    /// <see cref="SoapXml.DateTime(XElement?, string, TimeZoneInfo?)"/>.
+    /// </param>
+    public static ScheduledRecordingResult From(XElement? result, TimeZoneInfo? roomZone = null)
     {
         if (result is null) return new ScheduledRecordingResult();
 
@@ -50,7 +57,7 @@ public sealed record ScheduledRecordingResult
             ConflictsExist = SoapXml.Bool(result, "ConflictsExist"),
             SessionIds = SoapXml.Guids(result, "SessionIDs"),
             Conflicts = SoapXml.Items(result, "ConflictingSessions")
-                .Select(SoapXml.DescribeConflict)
+                .Select(conflict => SoapXml.DescribeConflict(conflict, roomZone))
                 .Where(s => s.Length > 0)
                 .ToList(),
         };
@@ -211,7 +218,7 @@ public sealed class RemoteRecorderClient(PanoptoSoapClient soap, TimeZoneInfo? r
 
         var result = await soap.InvokeAsync(Path, Service, request, ct).ConfigureAwait(false);
 
-        return ScheduledRecordingResult.From(result);
+        return ScheduledRecordingResult.From(result, _roomZone);
     }
 
     /// <summary>
@@ -236,7 +243,7 @@ public sealed class RemoteRecorderClient(PanoptoSoapClient soap, TimeZoneInfo? r
 
         var result = await soap.InvokeAsync(Path, Service, request, ct).ConfigureAwait(false);
 
-        return ScheduledRecordingResult.From(result);
+        return ScheduledRecordingResult.From(result, _roomZone);
     }
 
     private static RemoteRecorder? ReadRecorder(XElement element)

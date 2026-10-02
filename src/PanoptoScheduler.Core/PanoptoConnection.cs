@@ -49,62 +49,105 @@ public sealed class PanoptoConnection : IAsyncDisposable
         ITokenStore? tokenStore = null,
         IBulkAuditLog? auditLog = null,
         HttpClient? http = null)
+        : this(credentials, tokenStore, auditLog, http, CreateHttpClient)
     {
-        // Cookies are handled by hand: the legacy .ASPXAUTH the SOAP path needs
-        // lives in two app-level caches and is sent as a header. The default
-        // handler's own CookieContainer would silently hold a third copy that
-        // no sign-out can reach — HttpClient exposes no way to clear it — and
-        // that copy would keep authenticating requests as the previous user
-        // after a sign-out on a shared machine.
-        _http = http ?? new HttpClient(new SocketsHttpHandler { UseCookies = false })
+    }
+
+    /// <param name="createHttp">
+    /// Builds the client when none is handed in. A seam for the test that has to
+    /// see whether a client the connection made for itself is let go when the
+    /// constructor fails; everything else goes through the public constructor.
+    /// </param>
+    internal PanoptoConnection(
+        PanoptoCredentials credentials,
+        ITokenStore? tokenStore,
+        IBulkAuditLog? auditLog,
+        HttpClient? http,
+        Func<PanoptoCredentials, HttpClient> createHttp)
+    {
+        _http = http ?? createHttp(credentials);
+
+        try
+        {
+            Auth = new OAuthPkceAuthenticator(
+                credentials.ToOAuthOptions(),
+                _http,
+                // The token store is what makes sign-in once-per-machine rather than
+                // once-per-launch.
+                tokenStore ?? new DpapiTokenStore());
+
+            Auth.AuthorizationUrlReady += url =>
+            {
+                SignInUrlReady?.Invoke(url);
+                return Task.CompletedTask;
+            };
+
+            Limiter = new RateLimiterRegistry();
+
+            Reads = new DataSvcClient(_http, Limiter, Auth);
+
+            // Reads go out on the bearer; the SOAP write path needs the legacy
+            // cookie the bearer is exchanged for. Verified against the live tenant:
+            // without the exchange every SOAP call is anonymous — ListRecorders
+            // faults, and GetFolders answers 200 with nothing, which reads like an
+            // empty tenant rather than a refused one.
+            Cookies = new LegacyCookieProvider(_http, Limiter, Auth);
+            Soap = new PanoptoSoapClient(_http, Limiter, Auth, Cookies);
+
+            // Resolved once, at construction, so a zone this machine cannot honour
+            // stops the session rather than one booking in the middle of a batch.
+            RoomZone = credentials.ResolveTimeZone();
+
+            Recorders = new RemoteRecorderClient(Soap, RoomZone);
+            Sessions = new SessionManagementClient(Soap);
+
+            // One trail for both writers. They are the same account changing the same
+            // tenant, so two logs would put two run-id sequences in one file and buy
+            // nothing — and a run id is only useful if it is unique across everything
+            // that wrote that day.
+            BulkScheduling = new BulkScheduler(Recorders, Sessions, auditLog);
+
+            // Both clients: retiming lives on the recorder service, and keeping it in
+            // this one type is what stops the panel and the bulk path from growing two
+            // versions of the same guarded write.
+            BulkEditing = new BulkSessionEditor(Sessions, Recorders, auditLog);
+        }
+        catch when (http is null)
+        {
+            // A constructor that throws hands nothing back, so nobody else can
+            // ever dispose what it made — and the throw is not exotic: a timeZone
+            // in credentials.json this machine does not know stops the connection
+            // above on purpose, and the way out of that is to fix the file and try
+            // again, building another client each time. The client and its
+            // connection pool are this connection's alone to release. One that was
+            // handed in belongs to whoever handed it in, and is left alone.
+            _http.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The client the app runs on when none is handed in.
+    ///
+    /// <para>Cookies are handled by hand: the legacy .ASPXAUTH the SOAP path needs
+    /// lives in two app-level caches and is sent as a header. The default
+    /// handler's own CookieContainer would silently hold a third copy that no
+    /// sign-out can reach — HttpClient exposes no way to clear it — and that copy
+    /// would keep authenticating requests as the previous user after a sign-out on
+    /// a shared machine.</para>
+    /// </summary>
+    private static HttpClient CreateHttpClient(PanoptoCredentials credentials)
+    {
+        // Parsed before the handler exists, so a tenant URL that is not one
+        // throws with nothing yet made that would need disposing.
+        var tenant = new Uri(credentials.TenantUrl);
+
+        return new HttpClient(new SocketsHttpHandler { UseCookies = false })
         {
             // Every path handed to these clients is tenant-relative.
-            BaseAddress = new Uri(credentials.TenantUrl),
+            BaseAddress = tenant,
             Timeout = TimeSpan.FromSeconds(60),
         };
-
-        Auth = new OAuthPkceAuthenticator(
-            credentials.ToOAuthOptions(),
-            _http,
-            // The token store is what makes sign-in once-per-machine rather than
-            // once-per-launch.
-            tokenStore ?? new DpapiTokenStore());
-
-        Auth.AuthorizationUrlReady += url =>
-        {
-            SignInUrlReady?.Invoke(url);
-            return Task.CompletedTask;
-        };
-
-        Limiter = new RateLimiterRegistry();
-
-        Reads = new DataSvcClient(_http, Limiter, Auth);
-
-        // Reads go out on the bearer; the SOAP write path needs the legacy
-        // cookie the bearer is exchanged for. Verified against the live tenant:
-        // without the exchange every SOAP call is anonymous — ListRecorders
-        // faults, and GetFolders answers 200 with nothing, which reads like an
-        // empty tenant rather than a refused one.
-        Cookies = new LegacyCookieProvider(_http, Limiter, Auth);
-        Soap = new PanoptoSoapClient(_http, Limiter, Auth, Cookies);
-
-        // Resolved once, at construction, so a zone this machine cannot honour
-        // stops the session rather than one booking in the middle of a batch.
-        RoomZone = credentials.ResolveTimeZone();
-
-        Recorders = new RemoteRecorderClient(Soap, RoomZone);
-        Sessions = new SessionManagementClient(Soap);
-
-        // One trail for both writers. They are the same account changing the same
-        // tenant, so two logs would put two run-id sequences in one file and buy
-        // nothing — and a run id is only useful if it is unique across everything
-        // that wrote that day.
-        BulkScheduling = new BulkScheduler(Recorders, Sessions, auditLog);
-
-        // Both clients: retiming lives on the recorder service, and keeping it in
-        // this one type is what stops the panel and the bulk path from growing two
-        // versions of the same guarded write.
-        BulkEditing = new BulkSessionEditor(Sessions, Recorders, auditLog);
     }
 
     public OAuthPkceAuthenticator Auth { get; }

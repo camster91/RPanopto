@@ -134,6 +134,73 @@ public class LoopbackListenerTests
         Assert.Equal("abc123", query["code"]);
     }
 
+    /// <summary>
+    /// A connection that resets — before its request line is read, or before its
+    /// 404 can be written — is that connection's problem, not the sign-in's. The
+    /// socket error used to escape the loop and end the whole attempt, so a
+    /// browser preconnect that hung up early, or a scanner that resets every
+    /// socket it opens, failed a sign-in that was about to succeed.
+    /// </summary>
+    [Fact]
+    public async Task A_connection_that_resets_does_not_end_the_wait()
+    {
+        var port = FreePort();
+        await using var listener = new LoopbackListener(port, "/oauth/callback");
+        listener.Start();
+
+        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), "xyz");
+
+        // Several, each sending a stray request and then resetting at once, so
+        // the listener meets the reset on the read or on the 404 write — wherever
+        // the race puts it, both are the same connection's fault.
+        for (var i = 0; i < 5; i++)
+        {
+            using var rude = new TcpClient();
+            await rude.ConnectAsync(IPAddress.Loopback, port);
+            await rude.GetStream().WriteAsync(Encoding.ASCII.GetBytes("GET /favicon.ico HTTP/1.1\r\n"));
+            rude.LingerState = new LingerOption(true, 0);
+            rude.Close();
+
+            // Gives the listener the chance to reach this one before the next.
+            await Task.Delay(50);
+        }
+
+        Assert.False(pending.IsFaulted, pending.Exception?.ToString());
+
+        var callback = await SendAsync(port, "/oauth/callback?code=abc123&state=xyz");
+        Assert.Contains("200", callback);
+
+        var query = await pending.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("abc123", query["code"]);
+    }
+
+    /// <summary>
+    /// The other side of the line: the caller's own cancellation still ends the
+    /// wait, so catching one connection's faults has not made the loop
+    /// unstoppable.
+    /// </summary>
+    [Fact]
+    public async Task The_callers_cancellation_still_ends_the_wait_after_a_reset()
+    {
+        var port = FreePort();
+        await using var listener = new LoopbackListener(port, "/oauth/callback");
+        listener.Start();
+
+        using var stop = new CancellationTokenSource();
+        var pending = listener.WaitForCallbackAsync(TimeSpan.FromSeconds(15), "xyz", stop.Token);
+
+        using (var rude = new TcpClient())
+        {
+            await rude.ConnectAsync(IPAddress.Loopback, port);
+            rude.LingerState = new LingerOption(true, 0);
+        }
+
+        await Task.Delay(50);
+        stop.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
     [Fact]
     public async Task Requires_Start_before_waiting()
     {

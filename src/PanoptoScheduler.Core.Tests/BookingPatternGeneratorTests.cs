@@ -309,6 +309,35 @@ public class BookingPatternGeneratorTests
     }
 
     /// <summary>
+    /// The end goes through <c>RoomClock.ToWire</c> too. Only the start used to be
+    /// checked, so a slot that starts at an hour that exists and ends inside the
+    /// gap was generated and then failed at write time on every one of those
+    /// dates. The overnight case ends on the next morning, which is the date whose
+    /// 02:30 is missing: the Saturday-night slot is the one to flag.
+    /// </summary>
+    [Theory]
+    [InlineData(1, 30, 8, DayOfWeek.Sunday, false)]   // 01:30–02:30 on the Sunday
+    [InlineData(22, 0, 7, DayOfWeek.Saturday, true)]  // 22:00 Saturday – 02:30 Sunday
+    public void An_end_inside_the_hour_that_does_not_exist_is_flagged(
+        int startHour, int startMinute, int day, DayOfWeek weekday, bool overnight)
+    {
+        var pattern = Base() with
+        {
+            From = new DateOnly(2026, 3, day),
+            To = new DateOnly(2026, 3, day),
+            Weekdays = [weekday],
+            Start = new TimeSpan(startHour, startMinute, 0),
+            End = new TimeSpan(2, 30, 0),
+            AllowOvernight = overnight,
+        };
+
+        var problem = Assert.Single(BookingPatternGenerator.Problems(pattern, Toronto));
+
+        Assert.Contains("does not exist", problem, StringComparison.Ordinal);
+        Assert.Empty(BookingPatternGenerator.Generate(pattern, Toronto));
+    }
+
+    /// <summary>
     /// The other half of it: the same date and room at a time that does exist is
     /// not flagged, so the check above is not simply refusing the whole day.
     /// </summary>

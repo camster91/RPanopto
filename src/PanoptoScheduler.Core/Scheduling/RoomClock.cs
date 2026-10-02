@@ -43,13 +43,50 @@ public static class RoomClock
         // real one to put in a schedule — a room asked to record at 02:30 on that
         // date means something the clock cannot express — and the bare exception
         // says nothing about which row or which date.
-        if (zone.IsInvalidTime(naive))
-            throw new InvalidOperationException(
-                $"There is no {naive:yyyy-MM-dd HH:mm} in {zone.Id} — the clock jumps forward " +
-                "over that hour. Pick a time that exists on that date.");
+        if (MissingHour(naive, zone) is { } missing)
+            throw new InvalidOperationException(missing);
 
         return TimeZoneInfo.ConvertTimeToUtc(naive, zone);
     }
+
+    /// <summary>
+    /// The sentence <see cref="ToWire"/> would refuse <paramref name="wallClock"/>
+    /// with, or null when the room's clock does show that time.
+    ///
+    /// <para><b>For the dry runs, which never reach <see cref="ToWire"/>.</b> The
+    /// check used to live only inside the conversion, and the conversion only runs
+    /// on a real write — so a preview of a booking at 01:30–02:30 on the
+    /// spring-forward Sunday said "would record", the operator pressed the button
+    /// on the strength of it, and every one of those rows then failed. A preview
+    /// that approves what the run will refuse is worse than no preview: it is the
+    /// thing the operator was told to trust. Exposed as the message rather than a
+    /// bool so the rehearsal and the run say the same words, and an operator who
+    /// sees it in the preview recognises it if it ever reaches the run.</para>
+    /// </summary>
+    public static string? MissingHour(DateTime wallClock, TimeZoneInfo zone)
+    {
+        var naive = DateTime.SpecifyKind(wallClock, DateTimeKind.Unspecified);
+
+        return zone.IsInvalidTime(naive)
+            ? $"There is no {naive:yyyy-MM-dd HH:mm} in {zone.Id} — the clock jumps forward " +
+              "over that hour. Pick a time that exists on that date."
+            : null;
+    }
+
+    /// <summary>
+    /// The room's wall clock for an instant the tenant sent back <i>as an
+    /// instant</i> — a value that carries a <c>Z</c> or an explicit offset.
+    ///
+    /// <para><b>Not the inverse of every read.</b> The read path's measured rule is
+    /// that a value with no offset, and WCF's <c>/Date(…)/</c> form, already spell
+    /// out the room's clock and must not be converted; this is for the other
+    /// shape only. A value that says <c>Z</c> means UTC — the write path proved
+    /// that on the live tenant, which is why <see cref="ToWire"/> exists — and
+    /// showing its digits as they stand puts a 09:00 clash in Toronto on screen as
+    /// 13:00, a time nobody booked and nobody can find.</para>
+    /// </summary>
+    public static DateTime FromWire(DateTimeOffset instant, TimeZoneInfo zone)
+        => DateTime.SpecifyKind(TimeZoneInfo.ConvertTime(instant, zone).DateTime, DateTimeKind.Unspecified);
 
     /// <summary>
     /// What the clock on the room's wall says now.

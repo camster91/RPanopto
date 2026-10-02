@@ -278,6 +278,19 @@ public static class LegacyScheduleReader
         var startAt = day.Add(startTime);
         var endAt = day.Add(endTime);
 
+        // An end earlier on the clock than the start runs past midnight. A row
+        // carries one date and two clock times, so "10:00 PM to 12:00 AM" can only
+        // mean the midnight that ends that evening — and putting the end on the
+        // start's own date made it the midnight that began the day, an end before
+        // the start, and the row an error. That also made the next-day warning
+        // below unreachable: the end could never be on another date. Rolled by a
+        // day and warned about rather than refused, the same way the pattern
+        // generator treats an overnight slot. An end equal to the start is not
+        // rolled — a zero-length row is a typo, not a 24-hour recording — so the
+        // refusal below still catches it.
+        if (endTime < startTime)
+            endAt = endAt.AddDays(1);
+
         if (endAt <= startAt)
         {
             errors.Add(new ScheduleImportError(line, FormattableString.Invariant(
@@ -457,6 +470,13 @@ internal static class CsvReader
         var inQuotes = false;
         var fieldStarted = false;
 
+        // Set once a quoted field has closed, until the delimiter that ends it.
+        // Spaces and tabs in that stretch are held in `padding` until it is clear
+        // whether they are padding around the quotes or part of the value. See
+        // the opening-quote branch below.
+        var closedQuote = false;
+        var padding = new StringBuilder();
+
         for (var i = 0; i < text.Length; i++)
         {
             var c = text[i];
@@ -466,7 +486,7 @@ internal static class CsvReader
                 if (c == '"')
                 {
                     if (i + 1 < text.Length && text[i + 1] == '"') { field.Append('"'); i++; }
-                    else inQuotes = false;
+                    else { inQuotes = false; closedQuote = true; }
                 }
                 else
                 {
@@ -477,8 +497,19 @@ internal static class CsvReader
                 continue;
             }
 
-            if (c == '"' && !fieldStarted)
+            // Whitespace before the opening quote does not make the quote
+            // literal. RFC 4180 says it should, and Excel writes no such padding,
+            // but a hand-edited file with ", " between columns is the ordinary
+            // case — and taking the quote literally there splits
+            // `…, "Smith, John", Finance` at the comma inside the name, which
+            // moves every later column one place to the right: the folder lands in
+            // the webcast column and the row books into the wrong place without a
+            // word. Only blanks are skipped, and only before a quote: an unquoted
+            // field keeps its padding here and is trimmed where it is read, as it
+            // always was.
+            if (c == '"' && !closedQuote && (!fieldStarted || IsPadding(field)))
             {
+                field.Clear();
                 inQuotes = true;
                 fieldStarted = true;
                 continue;
@@ -489,6 +520,8 @@ internal static class CsvReader
                 fields.Add(field.ToString());
                 field.Clear();
                 fieldStarted = false;
+                closedQuote = false;
+                padding.Clear();
                 continue;
             }
 
@@ -499,11 +532,30 @@ internal static class CsvReader
                 fields.Add(field.ToString());
                 field.Clear();
                 fieldStarted = false;
+                closedQuote = false;
+                padding.Clear();
 
                 Add(records, fields, recordLine);
                 line++;
                 recordLine = line;
                 continue;
+            }
+
+            // The other side of the same padding: `"Smith, John" ,` — blanks
+            // between a closing quote and the delimiter belong to neither field.
+            // Held rather than dropped, because they are only padding if the
+            // delimiter is what comes next: in `"abc" def` they sit inside the
+            // value, and keep the place they always had there.
+            if (closedQuote && c is (' ' or '\t'))
+            {
+                padding.Append(c);
+                continue;
+            }
+
+            if (padding.Length > 0)
+            {
+                field.Append(padding);
+                padding.Clear();
             }
 
             field.Append(c);
@@ -525,6 +577,17 @@ internal static class CsvReader
         }
 
         return (records, null);
+    }
+
+    /// <summary>Whether what has accumulated so far is only spaces and tabs.</summary>
+    private static bool IsPadding(StringBuilder field)
+    {
+        for (var i = 0; i < field.Length; i++)
+        {
+            if (field[i] is not (' ' or '\t')) return false;
+        }
+
+        return true;
     }
 
     private static void Add(List<CsvRecord> records, List<string> fields, int line)

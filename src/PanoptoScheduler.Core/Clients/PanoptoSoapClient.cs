@@ -322,6 +322,34 @@ public sealed class PanoptoSoapClient(
         return ReadResult(xml, operation);
     }
 
+    /// <summary>
+    /// Whether a write that ended in <paramref name="error"/> may already have left
+    /// this machine — so its fate is unknown, rather than "not sent".
+    ///
+    /// <para><b>The operator's stop can no longer strike a write on the wire</b>:
+    /// <see cref="AttemptAsync"/> checks <paramref name="ct"/> once, just before
+    /// the send, and sends a write under <see cref="CancellationToken.None"/>. So a
+    /// cancellation carrying the caller's own, cancelled token is a stop that
+    /// landed before anything went out, and "not sent" is the truth.</para>
+    ///
+    /// <para><b>A cancellation still arrives after the send, though, and it is
+    /// the dangerous one.</b> <see cref="HttpClient.Timeout"/> reports itself as a
+    /// <see cref="TaskCanceledException"/> — the same family as a stop — with a
+    /// <see cref="TimeoutException"/> inside and the caller's token untouched. A
+    /// caller that rethrew every cancellation unexamined dropped that row from the
+    /// audit trail, and it is precisely the row that may exist in the tenant
+    /// without anyone having been told. Anything that is not the caller's own stop
+    /// is treated as possibly sent: a cancellation from a lookup that timed out
+    /// before the write is filed the same way, which over-warns about one row
+    /// rather than under-warning about a recording.</para>
+    /// </summary>
+    public static bool WriteMayHaveLeft(OperationCanceledException error, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+
+        return error.InnerException is TimeoutException || !ct.IsCancellationRequested;
+    }
+
     /// <summary>Wraps an operation element in a SOAP 1.1 envelope.</summary>
     public static string BuildEnvelope(XElement request)
         => new XDocument(
