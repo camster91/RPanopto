@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -306,32 +307,88 @@ public partial class BulkWindow : Window
     /// dispatcher handler, which closes the application — so the shortcut for
     /// "never mind" would have quit the program.</para>
     ///
-    /// <para>Refused while a run is going, because closing this window would not
-    /// stop one: the view model is retained by the calendar window, so the run
-    /// keeps writing to the tenant with nothing on screen showing it going, let
-    /// alone offering its Stop button. The refusal is said on the status line of
-    /// the tab that is running — the line the run's own progress reports arrive
-    /// on — and the run's Stop button is the way to make Escape work again.</para>
+    /// <para>Refused while a run is going, like every other way of closing the
+    /// window: the refusal lives in <see cref="OnClosing"/>, which Escape reaches
+    /// through <see cref="Window.Close"/> just as the Close button and the title
+    /// bar's X do.</para>
     /// </summary>
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         if (e.Key == Key.Escape)
         {
             e.Handled = true;
-
-            if (_viewModel.RunInProgress)
-            {
-                _viewModel.AnnounceOnRun(
-                    "A run is still going — the window stays open while it does.",
-                    "Stop the run first, from the running tab, if you want it not to finish.");
-                return;
-            }
-
             Close();
             return;
         }
 
         base.OnPreviewKeyDown(e);
+    }
+
+    /// <summary>
+    /// Set once the owner — the calendar window — has begun closing and was not
+    /// talked out of it, so this window does not refuse to close with it.
+    /// </summary>
+    private bool _ownerClosing;
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+
+        // The owner is assigned after the constructor, by the caller's object
+        // initializer, so this is the first point it can be relied on. Unhooked
+        // in OnClosed: the calendar builds a new one of these each time the bulk
+        // tools are opened, and a handler left on it would keep every closed one
+        // alive for the life of the app.
+        if (Owner is not null) Owner.Closing += Owner_Closing;
+    }
+
+    private void Owner_Closing(object? sender, CancelEventArgs e) => _ownerClosing = !e.Cancel;
+
+    /// <summary>
+    /// Refuses to close while a booking or edit run is going, however the close
+    /// was asked for — Escape, the Close button, or the title bar's X.
+    ///
+    /// <para>Closing this window would not stop a run: the view model is retained
+    /// by the calendar window, so the run keeps writing to the tenant with nothing
+    /// on screen showing it going, let alone offering its Stop button. Closing it
+    /// also tells the calendar to reload, which then reads the tenant while the
+    /// run is still changing it and draws a week that is out of date by the time
+    /// it lands. Only Escape used to be refused, so the two ways of closing a
+    /// window that people actually reach for went straight through. The refusal
+    /// is said on the status line of the tab that is running — the line the
+    /// run's own progress reports arrive on — and the run's Stop button is the
+    /// way to make closing work again.</para>
+    ///
+    /// <para><b>Except when the calendar itself is closing.</b> An owned window
+    /// goes when its owner goes, and closing the calendar ends the app; a window
+    /// that refused here would be holding the whole app open over a run the
+    /// operator has just chosen to walk away from, with no way out short of the
+    /// task manager. So that close is let through, and the run is cut off where
+    /// it stands when the process ends — the same as by any other way of ending
+    /// the app, with the audit trail holding every write that did go through.
+    /// Asking "are you sure" over a running booking belongs on the calendar's
+    /// close, not here. The app's own shutdown closes windows ignoring a cancel,
+    /// so a crash or an explicit Shutdown is never held up by this either.</para>
+    /// </summary>
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (!_ownerClosing && _viewModel.RunInProgress)
+        {
+            e.Cancel = true;
+
+            _viewModel.AnnounceOnRun(
+                "A run is still going — the window stays open while it does.",
+                "Stop the run first, from the running tab, if you want it not to finish.");
+        }
+
+        base.OnClosing(e);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        if (Owner is not null) Owner.Closing -= Owner_Closing;
+
+        base.OnClosed(e);
     }
 
     /// <summary>

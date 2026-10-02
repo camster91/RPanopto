@@ -140,8 +140,29 @@ public sealed class BookingPatternViewModel : ObservableObject
         // Not gated on the rooms: generating is gated on the pattern, and the
         // pattern's own problems are reported when the button is pressed rather
         // than by greying it out with nothing to say.
-        AddRowsCommand = new AsyncRelayCommand(() => GenerateAsync(replace: false));
-        ReplaceRowsCommand = new AsyncRelayCommand(() => GenerateAsync(replace: true));
+        //
+        // Gated on the grid's run, though, the same way the grid's own Clear and
+        // Remove are. Replace empties the grid before it fills it, so pressed
+        // mid-booking it wiped the on-screen outcome of every row already booked
+        // — the only record the operator had of which ones went through — while
+        // the run carried on writing behind it. Add is gated with it because a
+        // row arriving mid-run changes the grid the run, its progress bar and
+        // its report are counting against, and was never previewed.
+        AddRowsCommand = new AsyncRelayCommand(() => GenerateAsync(replace: false), () => !_grid.IsBusy);
+        ReplaceRowsCommand = new AsyncRelayCommand(() => GenerateAsync(replace: true), () => !_grid.IsBusy);
+
+        // The grid's raisers are its own, so a run starting or ending re-checks
+        // Clear and Remove but not these two, which live on this view model.
+        // Nothing in this app requeries commands on its own (there is no
+        // CommandManager hook), so without this the two buttons would keep
+        // whatever state they had when the run began.
+        _grid.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(BookingGridViewModel.IsBusy)) return;
+
+            AddRowsCommand.RaiseCanExecuteChanged();
+            ReplaceRowsCommand.RaiseCanExecuteChanged();
+        };
 
         ReloadRoomsCommand = Gate(new AsyncRelayCommand(LoadRoomsAsync, () => !IsLoadingRooms));
         TickShownCommand = Gate(new RelayCommand(TickShown, () => Shown.Count > 0));

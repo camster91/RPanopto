@@ -131,6 +131,19 @@ public partial class App : Application
             AppLog.Error("Credentials could not be read.", ex);
         }
 
+        // Nothing but an explicit Shutdown ends the app until the main window
+        // exists. The default, OnLastWindowClose, counts the setup dialog below as
+        // the last window: WPF also makes the first window built its MainWindow,
+        // so confirming the dialog closed the only window there was and began
+        // shutting the app down — and the calendar, built a moment later, flashed
+        // or never appeared at all, on exactly the first run a new machine has.
+        // Every way out before the main window is shown already calls Shutdown()
+        // by hand (cancelling setup, a second copy, the self-tests, a crash), so
+        // none of them waits on a window count. Set unconditionally rather than
+        // only around the dialog, because the window count is just as wrong for
+        // any other window that might come to be built ahead of the main one.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
         if (credentials is null)
         {
             AppLog.Info("No credentials on this machine and none shipped — asking.");
@@ -159,6 +172,15 @@ public partial class App : Application
 
         var window = new MainWindow(_panopto) { Title = $"Panopto Scheduler {Version}" };
         MainWindow = window;
+
+        // From here the calendar is the app: closing it ends the process. That is
+        // what OnLastWindowClose amounted to anyway — the sign-in dialog and the
+        // bulk window are both owned by the main window and close with it — but
+        // said by the window that matters rather than by a count, so a window
+        // built without an owner later cannot keep an invisible copy running and
+        // holding the single-instance lock. The self-test paths below end with
+        // their own Shutdown(), so they do not depend on either mode.
+        ShutdownMode = ShutdownMode.OnMainWindowClose;
 
 #if DEBUG
         // Draws a fixture week and touches no network. The only way to look at

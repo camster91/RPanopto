@@ -35,12 +35,18 @@ public sealed class ImportViewModel : ObservableObject
     private string _detail = "";
     private string _detailTooltip = "";
 
-    public ImportViewModel(Action<IReadOnlyList<ScheduleImportRow>> send)
+    public ImportViewModel(Action<IReadOnlyList<ScheduleImportRow>> send, Func<bool> gridIsBusy)
     {
         _send = send;
 
         ChooseFileCommand = new RelayCommand(ChooseFile);
-        SendRowsCommand = new RelayCommand(SendRows, () => HasRows);
+
+        // Not while the booking grid is mid-run: sending adds to that grid, and a
+        // row arriving under a run changes what its progress and report count
+        // against, unpreviewed — the grid's own Clear and Remove are refused then
+        // for the same reason. The grid is not this view model's to watch, so the
+        // owner passes its busy state in and re-raises this when it changes.
+        SendRowsCommand = new RelayCommand(SendRows, () => HasRows && !gridIsBusy());
     }
 
     public ObservableCollection<ImportRowViewModel> Rows { get; } = [];
