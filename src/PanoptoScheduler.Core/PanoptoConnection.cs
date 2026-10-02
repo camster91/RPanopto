@@ -162,6 +162,12 @@ public sealed class PanoptoConnection : IAsyncDisposable
 
     public async Task SignInAsync(CancellationToken ct = default)
     {
+        // Dropped before a sign-in, not only on SignOut: a refused session ends
+        // without SignOut (a 401 just asks for a new sign-in), and the cookie
+        // left from it would carry the next person's writes under the previous
+        // person's name. See SignOut for why it is the cookie that matters.
+        Soap.InvalidateAuthCookie();
+
         await Auth.SignInAsync(ct).ConfigureAwait(false);
         IsSignedIn = true;
     }

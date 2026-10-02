@@ -145,7 +145,7 @@ public sealed class PanoptoSoapClient(
 
         try
         {
-            return await AttemptAsync(path, service, request, cookie, ct).ConfigureAwait(false);
+            return await AttemptAsync(path, service, request, cookie, safeToRetry, ct).ConfigureAwait(false);
         }
         catch (PanoptoSoapFaultException)
         {
@@ -177,7 +177,7 @@ public sealed class PanoptoSoapClient(
 
             // Not caught: if this one faults too, the caller gets the real
             // reason rather than a retry loop's worth of noise.
-            return await AttemptAsync(path, service, request, cookie, ct).ConfigureAwait(false);
+            return await AttemptAsync(path, service, request, cookie, safeToRetry, ct).ConfigureAwait(false);
         }
     }
 
@@ -222,6 +222,7 @@ public sealed class PanoptoSoapClient(
         string service,
         XElement request,
         string? cookie,
+        bool safeToRetry,
         CancellationToken ct)
     {
         var operation = request.Name.LocalName;
@@ -247,7 +248,18 @@ public sealed class PanoptoSoapClient(
         else
             await auth.ApplyAsync(message, ct).ConfigureAwait(false);
 
-        using var response = await http.SendAsync(message, ct).ConfigureAwait(false);
+        // A call that may not be resent may not be abandoned once sent either.
+        // Cancelling a write on the wire does not stop Panopto acting on it: a
+        // ScheduleRecording aborted mid-flight can still create the recording,
+        // and the caller, told only "cancelled", reports the row as not sent —
+        // so booking again books it twice. Up to here a stop still applies,
+        // because nothing has left the machine; from here a write runs to its
+        // answer (or the client's own timeout, which callers already report as
+        // an unknown fate), and the stop lands before the next call instead.
+        ct.ThrowIfCancellationRequested();
+        var sendCt = safeToRetry ? ct : CancellationToken.None;
+
+        using var response = await http.SendAsync(message, sendCt).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
@@ -257,7 +269,7 @@ public sealed class PanoptoSoapClient(
                 $"Rate limited on {operation}. Paused for {retryAfter.TotalSeconds:0}s.");
         }
 
-        var xml = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var xml = await response.Content.ReadAsStringAsync(sendCt).ConfigureAwait(false);
 
         // A SOAP fault arrives with HTTP 500, so the fault has to be read out of
         // the body before the status code is treated as a transport failure —

@@ -355,6 +355,56 @@ public class LegacyCookieTests
     }
 
     /// <summary>
+    /// A sign-in drops the cookie too, not only a sign-out. A refused session
+    /// (a 401 on a read) ends by asking for a new sign-in without SignOut ever
+    /// running, so on a shared machine the next person to sign in would
+    /// otherwise write under the cookie the previous person left behind.
+    ///
+    /// <para>The sign-in is started with a token already cancelled, so it stops
+    /// at the browser step; the drop happens before that, which is the point.</para>
+    /// </summary>
+    [Fact]
+    public async Task Starting_a_sign_in_drops_the_previous_cookie()
+    {
+        var handler = new ScriptedHandler(() => Cookie(".ASPXAUTH=first"), Ok);
+        var http = new HttpClient(handler) { BaseAddress = new Uri("https://rotman.ca.panopto.com") };
+
+        const string tenant = "https://rotman.ca.panopto.com";
+        const string client = "test-client";
+
+        var store = new FakeTokenStore();
+        store.Save(tenant, client, new TokenSet("test-token", "refresh", DateTimeOffset.UtcNow.AddHours(1)));
+
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+
+        var connection = new PanoptoConnection(
+            new PanoptoCredentials
+            {
+                TenantUrl = tenant,
+                ClientId = client,
+                ClientSecret = "secret",
+                RedirectUri = $"http://localhost:{port}/oauth/callback",
+            },
+            store,
+            http: http);
+
+        Assert.True(connection.Restore());
+
+        await ListAsync(connection.Soap);
+        Assert.Equal(".ASPXAUTH=first", connection.Soap.AuthCookie);
+
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connection.SignInAsync(cancelled.Token));
+
+        Assert.Null(connection.Soap.AuthCookie);
+    }
+
+    /// <summary>
     /// A write is never re-sent, however it failed.
     ///
     /// <para>A retried <c>ScheduleRecording</c> is a second recording, not a

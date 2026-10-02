@@ -1852,6 +1852,17 @@ public sealed class CalendarViewModel : ObservableObject
             return false;
         }
 
+        // A read or another move is in flight. A move landing under a read is
+        // overwritten when the read replaces the cache — the grid then shows the
+        // old slot as fresh — and this method's own finally would clear IsBusy
+        // under the read and re-enable everything it had locked.
+        if (IsBusy)
+        {
+            Status = "Not moved.";
+            Detail = "The calendar is still busy. Wait for it to finish, then drag again.";
+            return false;
+        }
+
         if (block.SessionId is not { } id)
         {
             Status = "That session has no id, so it cannot be moved.";
