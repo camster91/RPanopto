@@ -30,6 +30,7 @@ public sealed class ImportViewModel : ObservableObject
     private ScheduleImportResult _parsed = ScheduleImportResult.Empty;
 
     private string _filePath = "";
+    private bool _dayFirstDates;
     private string _fileSummary = "No file loaded.";
     private string _status = "Choose a schedule file to begin.";
     private string _detail = "";
@@ -60,6 +61,27 @@ public sealed class ImportViewModel : ObservableObject
     {
         get => _filePath;
         private set => Set(ref _filePath, value);
+    }
+
+    /// <summary>
+    /// Read <c>10/04/2012</c> as 10 April. The parser has always had the option,
+    /// and its ambiguous-date warning tells the operator to re-import with it — but
+    /// nothing here passed it, so the advice pointed at a switch that did not exist.
+    ///
+    /// <para>Changing it reads the file again, the same way choosing a file does:
+    /// the rows on screen were parsed under the old setting, and leaving them up
+    /// would send the very dates the operator just said were the wrong way round.
+    /// Rows already sent to the booking grid are its copy and are not touched.</para>
+    /// </summary>
+    public bool DayFirstDates
+    {
+        get => _dayFirstDates;
+        set
+        {
+            if (!Set(ref _dayFirstDates, value)) return;
+
+            if (FilePath.Length > 0) Load();
+        }
     }
 
     public string FileSummary
@@ -120,7 +142,8 @@ public sealed class ImportViewModel : ObservableObject
 
         try
         {
-            _parsed = LegacyScheduleReader.ReadFile(FilePath);
+            _parsed = LegacyScheduleReader.ReadFile(
+                FilePath, new ScheduleImportOptions { DayFirstDates = DayFirstDates });
         }
         catch (Exception ex)
         {

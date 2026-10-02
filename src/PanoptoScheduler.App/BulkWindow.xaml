@@ -468,6 +468,10 @@
                                    TextTrimming="CharacterEllipsis" Margin="0,0,0,10"
                                    ToolTip="{Binding FilePath}" />
 
+                        <CheckBox Content="Dates are day-first (DD/MM)" Margin="0,0,0,10"
+                                  IsChecked="{Binding DayFirstDates}"
+                                  ToolTip="Reads 10/04/2012 as 10 April. Changing it reads the file again." />
+
                         <!-- The file reader has no booking controls of its own any more:
                              the rows go into the grid on the other tab, which is where
                              the fallback folder and the preview live. Two sets of those
