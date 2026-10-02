@@ -18,7 +18,7 @@ a commodity loader:
 
 | Property | Why |
 |---|---|
-| **Signed, but by an in-house certificate** | The executable, `install.ps1` and `uninstall.ps1` are signed during packaging (`publish.ps1 -CertificateThumbprint`, which calls `Set-AuthenticodeSignature` with SHA-256 and an RFC 3161 timestamp from `timestamp.digicert.com`). The certificate is the team's own self-signed one, so the signature is real but chains to nothing a machine already trusts: Windows still shows an unknown-publisher warning until IT deploys the sidecar `.cer` — it ships beside the zip in every release — to Trusted Root and Trusted Publishers, which is what the `Code-signing-certificate-for-IT.txt` note in the zip describes. |
+| **Signed, but by an in-house certificate** | The executable, `install.ps1` and `uninstall.ps1` are signed during packaging (`publish.ps1 -CertificateThumbprint`, which calls `Set-AuthenticodeSignature` with SHA-256 and an RFC 3161 timestamp from `timestamp.digicert.com`). The certificate is the team's own self-signed one, so the signature is real but chains to nothing a machine already trusts: Windows still shows an unknown-publisher warning until IT deploys the sidecar `.cer` — `PanoptoScheduler-CodeSigning.cer`, inside the zip and also attached beside it in every release — to Trusted Root and Trusted Publishers, which is what the `Code-signing-certificate-for-IT.txt` note next to it describes. |
 | **Ships the .NET runtime alongside it** | 396 files, ~135 MB unpacked, ~59 MB zipped. The `.exe` itself is 150 KB — the bulk is the runtime and framework assemblies, not application code. |
 | **`createdump.exe` in the folder** | A memory-dumping diagnostic that ships with the .NET runtime itself. It is not part of this app and is never invoked by it, but a file with that name and that capability is a reasonable thing for an engine to score. |
 | **Opens a listening socket** | `127.0.0.1:51820`, during sign-in only — see below. |
@@ -128,10 +128,13 @@ strings (`DisplayName`, `DisplayVersion`, `Publisher`, `InstallLocation`,
 `DisplayIcon`, `UninstallString`), `InstallDate`, `EstimatedSize` in KB, and the
 `NoModify` and `NoRepair` flags that hide Repair and Modify in Settings > Apps —
 and the uninstaller deletes it. Nothing the installer does needs
-administrator rights, and it refuses to run from an elevated prompt for that
-reason — a per-user install run as an administrator would install into the
-administrator's profile, not the user's, which is a silent and confusing
-outcome.
+administrator rights, and it refuses to run elevated as a different account
+from the one signed in to the desktop — a per-user install run as, say, an IT
+account typed into a UAC prompt would install into that account's profile,
+not the user's, which is a silent and confusing outcome. (An administrator
+installing for themselves, or a machine with UAC off, is allowed: that is
+their own profile. If the signed-in account cannot be determined, any
+elevated run is refused.)
 
 There is deliberately **no packaged installer executable**. A self-extracting
 `.exe` — Inno Setup, NSIS, any of them — is the exact shape the endpoint

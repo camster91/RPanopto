@@ -60,13 +60,49 @@ if (-not (Test-Path -LiteralPath (Join-Path $source 'defaults.json'))) {
 
 # ------------------------------------------------------------ can we do this?
 
-# A per-user install run from an elevated prompt installs into the
-# administrator's profile, not the person's, which is a silent and confusing
-# outcome. Refuse, and say why.
+# A per-user install run elevated AS SOMEONE ELSE -- the IT account typed into
+# a UAC prompt over the person's shoulder -- installs into that account's
+# %LOCALAPPDATA%, not the person's, which is a silent and confusing outcome.
+# Refuse that, and say why.
+#
+# Being an administrator is not the problem by itself, and refusing on that
+# alone (as this once did) broke two ordinary cases: an account that is an
+# administrator on a machine with UAC turned off, where every process runs
+# with the admin token, and someone who elevated their own account. Both
+# write to their own profile, which is the right one; under the old rule every
+# install from them failed, and so did every uninstall from Settings > Apps,
+# which passes no -Force. So the test is whether the account this runs as is
+# the account signed in to the desktop.
+#
+# The desktop's account is read from the owner of explorer.exe in this
+# session: Explorer is the desktop, so it runs as whoever is sitting at it,
+# whatever account an elevation prompt switched this window to. When that
+# cannot be read -- no Explorer (a replaced shell), WMI unavailable, or two
+# owners that disagree -- the old rule stands: an elevated run is refused,
+# because "probably fine" is not good enough to guess at someone's profile.
+function Get-DesktopUserSid {
+    try {
+        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        $owners = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'explorer.exe' AND SessionId = $session" -ErrorAction Stop |
+            ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction Stop } |
+            Where-Object { $_.ReturnValue -eq 0 -and $_.Sid } |
+            ForEach-Object { $_.Sid } |
+            Select-Object -Unique)
+        if ($owners.Count -eq 1) { return $owners[0] }
+    } catch { }
+    return $null
+}
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -and -not $Force) {
-    Fail "this is running from an elevated (administrator) prompt, so it would install into the administrator's profile rather than your own. Close it and run Install.cmd normally. Pass -Force if you do mean to install for this account."
+    $desktopSid = Get-DesktopUserSid
+    if (-not $desktopSid) {
+        Fail "this is running from an elevated (administrator) prompt, and the account signed in to this desktop could not be determined, so it might install into the administrator's profile rather than your own. Close it and run Install.cmd normally. Pass -Force if you do mean to install for $($identity.Name)."
+    }
+    if ($desktopSid -ne $identity.User.Value) {
+        Fail "this is running as $($identity.Name), not as the account signed in to this desktop, so it would install into $($identity.Name)'s profile rather than your own. Close it and run Install.cmd normally, without 'Run as administrator'. Pass -Force if you do mean to install for $($identity.Name)."
+    }
 }
 
 # Replacing files underneath a running instance is the one way to leave a broken
