@@ -178,10 +178,18 @@ then release -- or discard them if the zip was built without them.
 "@
 }
 
+# The repository is also known as camster91/RPanopto, and GitHub serves it
+# under both names, so a checkout cloned under either one is the same
+# repository. Matching only $repo would refuse a remote that points at it.
+$repoNames = @($repo, "camster91/RPanopto")
+
 $releaseRemote = $null
 foreach ($remoteName in @(Invoke-Native { git -C $src remote 2>$null })) {
     $remoteUrl = "$(Invoke-Native { git -C $src remote get-url $remoteName 2>$null })".Trim()
-    if ($remoteUrl -match ('[:/]' + [regex]::Escape($repo) + '(\.git)?/?$')) { $releaseRemote = $remoteName; break }
+    foreach ($name in $repoNames) {
+        if ($remoteUrl -match ('[:/]' + [regex]::Escape($name) + '(\.git)?/?$')) { $releaseRemote = $remoteName; break }
+    }
+    if ($releaseRemote) { break }
 }
 if (-not $releaseRemote) {
     throw "No git remote in this checkout points at $repo, so there is no way to check that commit $head has been pushed there. Add one (git remote add release https://github.com/$repo.git), push, and run this again."
